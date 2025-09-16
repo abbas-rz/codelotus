@@ -154,6 +154,11 @@ def main():
     move_target_cm = 0.0
     seg_heading = None
 
+    # Live pose (in cm); initialize at first checkpoint if available
+    live_x_cm = checkpoints[0][0] if checkpoints else 0.0
+    live_y_cm = checkpoints[0][1] if checkpoints else 0.0
+    live_heading_deg = 0.0  # 0° = up; we use gyro-integrated rotation as heading
+
     clock = pg.time.Clock()
     running = True
     while running:
@@ -172,6 +177,12 @@ def main():
                     seg_idx = 0
                     phase = "idle"
                     move_start_lidar_mm = None
+                    # Reset live pose to first checkpoint
+                    if checkpoints:
+                        live_x_cm, live_y_cm = checkpoints[0]
+                    else:
+                        live_x_cm, live_y_cm = 0.0, 0.0
+                    live_heading_deg = 0.0
                 elif e.key == pg.K_a:
                     auto_track = not auto_track
                 elif e.key == pg.K_LEFTBRACKET and not auto_track:
@@ -186,6 +197,9 @@ def main():
         rotation_deg = get_rotation_degrees()
         lidar_mm = get_current_distance()
         lidar_fresh = is_lidar_data_fresh(max_age_seconds=1.0)
+
+        # Update live heading from gyro-derived rotation (wrap to [0,360))
+        live_heading_deg = (rotation_deg % 360.0 + 360.0) % 360.0
 
         # Auto phase estimation
         if auto_track and segments:
@@ -258,17 +272,28 @@ def main():
                 p1 = checkpoints[i0 + 1]
                 x = p0[0] + (p1[0] - p0[0]) * ratio
                 y = p0[1] + (p1[1] - p0[1]) * ratio
+                # Persist live pose in cm
+                live_x_cm, live_y_cm = x, y
                 # Draw robot marker
                 rx_img, ry_img = cm_to_image_xy(x, y, px_per_cm_x, px_per_cm_y)
                 rx, ry = image_to_screen((rx_img, ry_img), scale, offset)
                 pg.draw.circle(screen, (255, 80, 80), (int(rx), int(ry)), 6)
                 # Draw orientation arrow (use accumulated planned heading if available)
-                heading = seg_heading if seg_heading is not None else 0.0
+                heading = seg_heading if seg_heading is not None else live_heading_deg
                 rad = math.radians(heading)
                 # 0° up => vector (0, -1); we map to screen delta using img px/cm relationship roughly
                 vx = math.sin(rad) * 20
                 vy = -math.cos(rad) * 20
                 pg.draw.line(screen, (255, 80, 80), (rx, ry), (rx + vx, ry + vy), 3)
+        else:
+            # If we can't compute from segments, still draw live pose at last known location
+            rx_img, ry_img = cm_to_image_xy(live_x_cm, live_y_cm, px_per_cm_x, px_per_cm_y)
+            rx, ry = image_to_screen((rx_img, ry_img), scale, offset)
+            pg.draw.circle(screen, (255, 80, 80), (int(rx), int(ry)), 6)
+            rad = math.radians(live_heading_deg)
+            vx = math.sin(rad) * 20
+            vy = -math.cos(rad) * 20
+            pg.draw.line(screen, (255, 80, 80), (rx, ry), (rx + vx, ry + vy), 3)
 
         # Right side HUD panel (transparent overlay)
         hud = pg.Surface((int(ww * 0.34), wh), pg.SRCALPHA)
@@ -301,6 +326,12 @@ def main():
         y += 22
         st = "OK" if lidar_fresh else "STALE"
         draw_text(screen, f"Distance: {lidar_mm} mm  [{st}]", (hud_x, y), font)
+        y += 24
+
+        # Live Pose
+        draw_text(screen, "Pose:", (hud_x, y), font_big)
+        y += 22
+        draw_text(screen, f"x={live_x_cm:.1f} cm  y={live_y_cm:.1f} cm  heading={live_heading_deg:.1f}°", (hud_x, y), font)
         y += 24
 
         # Encoders (placeholder)
