@@ -1,0 +1,8 @@
+{
+  "pc_host": "abbas-pc.local",
+  "telem_port": 9001,
+  "ctrl_port": 9000,
+  "serial_port": "/dev/serial0",
+  "baud": 115200,
+  "pwm_freq": 155
+}
