@@ -36,6 +36,8 @@ latest_heading = 0.0
 latest_mag = {"x":0, "y":0, "z":0}
 latest_temp_c = 0.0
 last_imu_time = 0
+latest_encoders = {"m1": 0, "m2": 0, "m3": 0, "m4": 0}
+last_enc_time = 0
 
 # Gyro integration variables
 initial_heading_set = False
@@ -97,7 +99,68 @@ def send_motor_differential(left, right):
     send_motor(clamp(left, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT),
                clamp(right, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT))
 
-# ----------------------wwssssssssssssssssswwwssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssswwwwwwwwwssssswwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwsssssssssssssssssssssssssssssssssssssssssssdddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaddddddddddddddddddddddddddddddddddaaaaaaaaaaaaaaaddddddaaaaaaaaaaaaaaaaaaaaaaaaddddddddddddddadddddddaaaaaadddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddaaaaaaaaaaaaddaaaaadaaaaaadaaaaaaaaaaaadaaaaaaaaaaaaaaaaaaaaadddddddddddddaaaaaadddddddaaaaadddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddw
+# Extended motor control: 4 independent motors (TB6612 x2)
+def send_motor4(m1, m2=None, m3=None, m4=None):
+    """Send per-motor speed commands. Accepts either 4 positional ints or a dict with keys m1..m4."""
+    global seq
+    if ctrl_sock is None:
+        initialize_sockets()
+    if isinstance(m1, dict):
+        speeds = {
+            'm1': int(clamp(m1.get('m1', 0), -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
+            'm2': int(clamp(m1.get('m2', 0), -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+            'm3': int(clamp(m1.get('m3', 0), -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
+            'm4': int(clamp(m1.get('m4', 0), -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+        }
+    else:
+        speeds = {
+            'm1': int(clamp(m1 or 0, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
+            'm2': int(clamp(m2 or 0, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+            'm3': int(clamp(m3 or 0, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
+            'm4': int(clamp(m4 or 0, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+        }
+    msg = {'type': 'motor4', **speeds, 'seq': seq, 'ts': int(time.time()*1000)}
+    seq += 1
+    ctrl_sock.sendto(json.dumps(msg).encode(), (RPI_IP, RPI_CTRL_PORT))
+
+def move_by_ticks(left_ticks, right_ticks, left_speed, right_speed):
+    """Move until encoders reach absolute tick targets at given speeds."""
+    global seq
+    if ctrl_sock is None:
+        initialize_sockets()
+    msg = {
+        'type': 'move_ticks',
+        'left_ticks': int(left_ticks),
+        'right_ticks': int(right_ticks),
+        'left_speed': int(clamp(left_speed, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
+        'right_speed': int(clamp(right_speed, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+        'seq': seq,
+        'ts': int(time.time()*1000)
+    }
+    seq += 1
+    ctrl_sock.sendto(json.dumps(msg).encode(), (RPI_IP, RPI_CTRL_PORT))
+
+def set_servo_angle(angle_deg):
+    """Set SG90 servo angle in degrees (0-180 typical)."""
+    global seq
+    if ctrl_sock is None:
+        initialize_sockets()
+    msg = {'type': 'servo', 'angle': float(angle_deg), 'seq': seq, 'ts': int(time.time()*1000)}
+    seq += 1
+    ctrl_sock.sendto(json.dumps(msg).encode(), (RPI_IP, RPI_CTRL_PORT))
+
+def stepper_steps(steps, step_delay_ms=None):
+    """Move 28BYJ-48 stepper by step count. Optional per-step delay in ms."""
+    global seq
+    if ctrl_sock is None:
+        initialize_sockets()
+    msg = {'type': 'stepper', 'steps': int(steps), 'seq': seq, 'ts': int(time.time()*1000)}
+    if step_delay_ms is not None:
+        msg['delay_ms'] = int(step_delay_ms)
+    seq += 1
+    ctrl_sock.sendto(json.dumps(msg).encode(), (RPI_IP, RPI_CTRL_PORT))
+
+# ----------------------
 # Telemetry Functions
 # ----------------------
 def get_current_distance(): return current_distance
@@ -107,6 +170,10 @@ def is_lidar_data_fresh(max_age_seconds=2.0):
 def get_latest_imu(): return latest_accel, latest_gyro, last_imu_time
 
 def get_latest_heading(): return latest_heading, last_imu_time
+
+def get_latest_encoders():
+    """Return latest encoder counts dict and timestamp."""
+    return latest_encoders, last_enc_time
 
 def get_full_imu_data(): 
     """Get all IMU data including heading, magnetometer, and temperature"""
@@ -233,6 +300,21 @@ def telem_loop(verbose=True):
                     print(f"IMU accel: x={latest_accel['x']:.2f}, y={latest_accel['y']:.2f}, z={latest_accel['z']:.2f}  "
                           f"gyro: x={corrected_gyro['x']:.2f}, y={corrected_gyro['y']:.2f}, z={corrected_gyro['z']:.2f}{cal_indicator}  "
                           f"heading: {latest_heading:.1f}°  rotation: {current_rotation:.1f}°  ts={j.get('ts',0)}")
+
+            # --- Encoders ---
+            elif j.get('type') == 'encoders':
+                counts = j.get('counts') or j.get('encoders') or {}
+                # Normalize to m1..m4 keys
+                normalized = {
+                    'm1': int(counts.get('m1', counts.get('left', 0)) or 0),
+                    'm2': int(counts.get('m2', counts.get('right', 0)) or 0),
+                    'm3': int(counts.get('m3', 0) or 0),
+                    'm4': int(counts.get('m4', 0) or 0),
+                }
+                latest_encoders.update(normalized)
+                last_enc_time = time.time()
+                if verbose:
+                    print(f"ENC m1={latest_encoders['m1']} m2={latest_encoders['m2']} m3={latest_encoders['m3']} m4={latest_encoders['m4']}  ts={j.get('ts',0)}")
 
         except Exception as e:
             if verbose:

@@ -4,5 +4,23 @@
   "ctrl_port": 9000,
   "serial_port": "/dev/serial0",
   "baud": 115200,
-  "pwm_freq": 155
+  "pwm_freq": 155,
+  "driver": "TB6612",
+  "tb6612": {
+    "stby": 23,
+    "A": {"pwm": 12, "in1": 20, "in2": 21},
+    "B": {"pwm": 13, "in1": 19, "in2": 26}
+  },
+  "tb6612_2": {
+    "A": {"pwm": 18, "in1": 24, "in2": 25},
+    "B": {"pwm": 16, "in1": 5,  "in2": 6}
+  },
+  "encoders": {
+    "m1": {"a": 4},
+    "m2": {"a": 17},
+    "m3": {"a": 27},
+    "m4": {"a": 22}
+  },
+  "servo": {"pin": 7, "freq": 50},
+  "stepper": {"pins": [14, 15, 8, 9], "step_delay_ms": 3}
 }

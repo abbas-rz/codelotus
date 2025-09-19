@@ -36,3 +36,11 @@ Use the systemd units in `../docs/PI_SETUP.md`.
 ## Telemetry formats
 - IMU: `{type:"imu", ts, accel:{x,y,z}, gyro:{x,y,z}}`
 - TF-Luna: `{type:"tfluna", ts, dist_mm, strength, temp_c}`
+ - Encoders: `{type:"encoders", ts, counts:[m1,m2,m3,m4]}`
+
+## Control messages (UDP)
+- Differential (legacy): `{type:"motor", left, right, seq}`
+- Individual motors (TB6612): `{type:"motor4", speeds:[m1,m2,m3,m4], seq}`
+- Move by ticks (simple): `{type:"move_ticks", target:[left,right], speeds:[lspd,rspd], seq}`
+- Servo: `{type:"servo", angle: 0..180, seq}`
+- Stepper: `{type:"stepper", steps: int, seq}`

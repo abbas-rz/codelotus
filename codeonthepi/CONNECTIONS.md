@@ -2,15 +2,19 @@
 
 All BCM pin numbers (not physical pin index).
 
-## Motor Driver (L298N)
-- ENA: GPIO12 (Pin 32)
-- IN1: GPIO20 (Pin 38)
-- IN2: GPIO21 (Pin 40)
-- ENB: GPIO13 (Pin 33)
-- IN3: GPIO19 (Pin 35)
-- IN4: GPIO26 (Pin 37)
-- Power: 12V battery to L298N, 5V logic from Pi NOT recommended through L298N 5V out; prefer external 5V regulator for Pi.
-- Grounds: Common ground between Pi, L298N, sensors, battery.
+## Motor Drivers
+
+### TB6612FNG (dual, 2 chips for 4 motors)
+- STBY: GPIO23 (if used)
+- Chip 1:
+	- Channel A (m1): PWM=GPIO12, IN1=GPIO20, IN2=GPIO21
+	- Channel B (m2): PWM=GPIO13, IN1=GPIO19, IN2=GPIO26
+- Chip 2:
+	- Channel A (m3): PWM=GPIO18, IN1=GPIO24, IN2=GPIO25
+	- Channel B (m4): PWM=GPIO16, IN1=GPIO5,  IN2=GPIO6
+
+Motor order used by code: m1=1A, m2=1B, m3=2A, m4=2B. Left side: m1+m3, Right side: m2+m4.
+
 
 ## TF-Luna LIDAR (UART)
 - UART TX (TF-Luna) -> Pi GPIO15 (RXD0, Pin 10)
@@ -27,9 +31,33 @@ All BCM pin numbers (not physical pin index).
 - I2C bus: 1, Address: 0x68 (default)
 
 ## Tactile Button (Start/Stop)
-- BUTTON -> GPIO17 (Pin 11)
 - Other side of button -> GND
 - Internal pull-up used in software
+## Encoders (N20, single-channel)
+- m1 A: GPIO4
+- m2 A: GPIO17
+- m3 A: GPIO27
+- m4 A: GPIO22
+
+Note: This is single-channel counting; direction inferred from last motor command.
+
+## SG90 Servo (for LIDAR sweep)
+- Signal: GPIO7 (Pin 26) — 50Hz PWM
+
+## 28BYJ-48 Stepper
+- IN1..IN4: GPIO14, GPIO15, GPIO8, GPIO9 (half-step sequence)
+- BUTTON -> GPIO17 (Pin 11)
+
+### Rotational Mechanism (rotationalmech.py)
+- Driver: ULN2003 board with 28BYJ-48 stepper
+- GPIO (BCM):
+	- IN1 -> GPIO14
+	- IN2 -> GPIO15
+	- IN3 -> GPIO8
+	- IN4 -> GPIO9
+- Power: 5V to ULN2003 board VIN; GND common with Pi
+- Usage: run `rotationalmech.py` on the Pi to step in 53° increments every 5s. Adjust pins and increment in the file if needed.
+
 
 ## Network
 - Control and telemetry over UDP

@@ -3,11 +3,16 @@
 pi_control.py — Raspberry Pi robot control and telemetry service
 
 Features:
-- Motor control (L298N dual H-bridge via GPIO PWM)
+- Motor control:
+    - L298N dual H-bridge (legacy)
+    - TB6612FNG dual H-bridge (supports 4 motors via 2 chips)
 - TF-Luna LIDAR telemetry over UART
 - MPU6050 IMU telemetry over I2C
 - UDP control listener (receives motor commands)
 - UDP telemetry sender (sends IMU + LIDAR)
+ - Encoders telemetry (for N20 with encoders)
+ - SG90 servo control
+ - 28BYJ-48 stepper control
 
 Configurable:
 - PC host/IP (supports IPv4 or mDNS .local)
@@ -27,16 +32,34 @@ Config file (optional): codeonthepi/config.json
   "ctrl_port": 9000,
   "serial_port": "/dev/serial0",
   "baud": 115200,
-  "pwm_freq": 155
+    "pwm_freq": 155,
+    "driver": "TB6612",  
+    "tb6612": {
+        "stby": 23,
+        "A": {"pwm": 12, "in1": 20, "in2": 21},
+        "B": {"pwm": 13, "in1": 19, "in2": 26}
+    },
+    "tb6612_2": {
+        "A": {"pwm": 18, "in1": 24, "in2": 25},
+        "B": {"pwm": 16, "in1": 5,  "in2": 6}
+    },
+    "encoders": {
+        "m1": {"a": 4},
+        "m2": {"a": 17},
+        "m3": {"a": 27},
+        "m4": {"a": 22}
+    },
+    "servo": {"pin": 7, "freq": 50},
+    "stepper": {"pins": [14, 15, 8, 9], "step_delay_ms": 3}
 }
 
 Motor pins (BCM): ENA=12 IN1=20 IN2=21 ENB=13 IN3=19 IN4=26
 
 """
 import argparse, os, json, socket, threading, time
-import serial
-import RPi.GPIO as GPIO
-import smbus
+import serial # pyright: ignore[reportMissingModuleSource]
+import RPi.GPIO as GPIO # pyright: ignore[reportMissingModuleSource]
+import smbus # pyright: ignore[reportMissingImports]
 from typing import Optional
 
 
@@ -50,6 +73,7 @@ DEFAULT_CFG = {
     "serial_port": "/dev/serial0",
     "baud": 115200,
     "pwm_freq": 155,
+    "driver": "TB6612",
 }
 
 CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
@@ -70,6 +94,7 @@ def load_config():
     cfg["serial_port"] = os.getenv("SERIAL_PORT", cfg["serial_port"]) 
     cfg["baud"] = int(os.getenv("BAUD", cfg["baud"]))
     cfg["pwm_freq"] = int(os.getenv("PWM_FREQ", cfg["pwm_freq"]))
+    cfg["driver"] = os.getenv("DRIVER", cfg.get("driver", "TB6612"))
     return cfg
 
 
@@ -130,6 +155,146 @@ class Motors:
             GPIO.cleanup()
 
 
+class TB6612:
+    """TB6612FNG driver handling 4 motors via two chips (A/B channels each)."""
+    def __init__(self, cfg):
+        GPIO.setmode(GPIO.BCM)
+        GPIO.setwarnings(False)
+        self.channels = {}
+        self.stby = cfg.get('tb6612', {}).get('stby')
+        # First chip
+        for label in ('A', 'B'):
+            ch = cfg.get('tb6612', {}).get(label, {})
+            if ch:
+                self._setup_channel(f"1{label}", ch)
+        # Second chip
+        for label in ('A', 'B'):
+            ch = cfg.get('tb6612_2', {}).get(label, {})
+            if ch:
+                self._setup_channel(f"2{label}", ch)
+        # Map logical motors m1..m4 to channels 1A,1B,2A,2B
+        self.order = ["1A", "1B", "2A", "2B"]
+        if self.stby is not None:
+            GPIO.setup(self.stby, GPIO.OUT, initial=GPIO.HIGH)
+
+    def _setup_channel(self, name, ch):
+        pwm_pin, in1, in2 = ch.get('pwm'), ch.get('in1'), ch.get('in2')
+        if pwm_pin is None or in1 is None or in2 is None:
+            return
+        GPIO.setup(in1, GPIO.OUT)
+        GPIO.setup(in2, GPIO.OUT)
+        GPIO.setup(pwm_pin, GPIO.OUT)
+        pwm = GPIO.PWM(pwm_pin, 2000)  # 2kHz PWM for TB6612
+        pwm.start(0)
+        self.channels[name] = {"in1": in1, "in2": in2, "pwm": pwm, "last": 0}
+
+    def set_motor(self, idx: int, speed: int):
+        # idx: 0..3 maps to m1..m4
+        if idx < 0 or idx >= len(self.order):
+            return
+        name = self.order[idx]
+        ch = self.channels.get(name)
+        if not ch:
+            return
+        s = max(-100, min(100, int(speed)))
+        in1, in2, pwm = ch['in1'], ch['in2'], ch['pwm']
+        if s >= 0:
+            GPIO.output(in1, GPIO.HIGH)
+            GPIO.output(in2, GPIO.LOW)
+        else:
+            GPIO.output(in1, GPIO.LOW)
+            GPIO.output(in2, GPIO.HIGH)
+        pwm.ChangeDutyCycle(abs(s))
+        ch['last'] = s
+
+    def set_pair(self, left: int, right: int):
+        # Assume m1+m3 = left side, m2+m4 = right side
+        self.set_motor(0, left)
+        self.set_motor(2, left)
+        self.set_motor(1, right)
+        self.set_motor(3, right)
+
+    def stop(self):
+        for ch in self.channels.values():
+            ch['pwm'].ChangeDutyCycle(0)
+        if self.stby is not None:
+            GPIO.output(self.stby, GPIO.LOW)
+
+
+class Encoders:
+    def __init__(self, cfg, tb: TB6612 | None = None):
+        self.counts = [0, 0, 0, 0]
+        self.tb = tb
+        self.pins = []
+        enc_cfg = cfg.get('encoders', {})
+        order = ['m1','m2','m3','m4']
+        for i, key in enumerate(order):
+            a = enc_cfg.get(key, {}).get('a')
+            self.pins.append(a)
+            if a is not None:
+                GPIO.setup(a, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+                GPIO.add_event_detect(a, GPIO.BOTH, callback=self._make_cb(i), bouncetime=1)
+
+    def _make_cb(self, idx):
+        def cb(channel):
+            # Simple single-channel count; direction from motor last command if tb available
+            direction = 1
+            if self.tb is not None and idx < len(self.tb.order):
+                name = self.tb.order[idx]
+                ch = self.tb.channels.get(name)
+                if ch and ch.get('last', 0) < 0:
+                    direction = -1
+            self.counts[idx] += direction
+        return cb
+
+    def reset(self):
+        self.counts = [0, 0, 0, 0]
+
+    def snapshot(self):
+        return list(self.counts)
+
+
+class ServoSG90:
+    def __init__(self, pin: int, freq: int = 50):
+        self.pin = pin
+        GPIO.setup(pin, GPIO.OUT)
+        self.pwm = GPIO.PWM(pin, freq)
+        self.pwm.start(0)
+
+    def angle(self, deg: float):
+        d = max(0.0, min(180.0, float(deg)))
+        duty = 2.5 + (d / 180.0) * 10.0
+        self.pwm.ChangeDutyCycle(duty)
+
+
+class Stepper28BYJ:
+    # Half-step sequence
+    SEQ = [
+        (1,0,0,0), (1,1,0,0), (0,1,0,0), (0,1,1,0),
+        (0,0,1,0), (0,0,1,1), (0,0,0,1), (1,0,0,1),
+    ]
+    def __init__(self, pins: list[int], step_delay_ms: int = 3):
+        self.pins = pins
+        self.delay = max(1, step_delay_ms) / 1000.0
+        for p in pins:
+            GPIO.setup(p, GPIO.OUT, initial=GPIO.LOW)
+
+    def step(self, steps: int):
+        seq = Stepper28BYJ.SEQ
+        count = abs(int(steps))
+        direction = 1 if steps >= 0 else -1
+        idx = 0 if direction > 0 else len(seq)-1
+        for _ in range(count):
+            pattern = seq[idx]
+            for pin, val in zip(self.pins, pattern):
+                GPIO.output(pin, GPIO.HIGH if val else GPIO.LOW)
+            time.sleep(self.delay)
+            idx = (idx + direction) % len(seq)
+        # de-energize
+        for p in self.pins:
+            GPIO.output(p, GPIO.LOW)
+
+
 class IMU:
     def __init__(self, bus_id=1, addr=0x68):
         self.bus = smbus.SMBus(bus_id)
@@ -181,7 +346,7 @@ class TFLuna:
             return {"type": "tfluna", "ts": ts, "dist_mm": int(dist_cm * 10), "strength": strength, "temp_c": temp_c}
 
 
-def telemetry_sender(pc_host: str, telem_port: int, imu: IMU, lidar: TFLuna, ctrl_sock: socket.socket):
+def telemetry_sender(pc_host: str, telem_port: int, imu: IMU, lidar: TFLuna, enc: 'Encoders|None', ctrl_sock: socket.socket):
     txsock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     dest = (resolve_host(pc_host), telem_port)
 
@@ -220,14 +385,24 @@ def telemetry_sender(pc_host: str, telem_port: int, imu: IMU, lidar: TFLuna, ctr
             # small sleep to avoid busy loop
             time.sleep(0.01)
 
+    def enc_loop():
+        if enc is None:
+            return
+        while True:
+            ts = int(time.time() * 1000)
+            counts = enc.snapshot()
+            send({"type": "encoders", "ts": ts, "counts": counts})
+            time.sleep(0.05)
+
     t1 = threading.Thread(target=imu_loop, daemon=True)
     t2 = threading.Thread(target=lidar_loop, daemon=True)
-    t1.start(); t2.start()
+    t3 = threading.Thread(target=enc_loop, daemon=True)
+    t1.start(); t2.start(); t3.start()
 
     return dest, update_dest_from_ctrl
 
 
-def control_server(ctrl_port: int, motors: Motors, on_sender_ip):
+def control_server(ctrl_port: int, driver, on_sender_ip, servo: 'ServoSG90|None'=None, stepper: 'Stepper28BYJ|None'=None, enc: 'Encoders|None'=None):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(('', ctrl_port))
     print(f"Control listen on :{ctrl_port}")
@@ -241,9 +416,49 @@ def control_server(ctrl_port: int, motors: Motors, on_sender_ip):
         if j.get('type') == 'motor':
             left = int(j.get('left', 0))
             right = int(j.get('right', 0))
-            motors.set(left, right)
+            # Back-compat: two-wheel differential. Use driver.set_pair when TB6612, else legacy Motors.set
+            if hasattr(driver, 'set_pair'):
+                driver.set_pair(left, right)
+            else:
+                driver.set(left, right)
             on_sender_ip(sender_ip)  # update telem destination to whoever is driving us
             sock.sendto(json.dumps({'type': 'ack', 'seq': j.get('seq'), 'ts': int(time.time()*1000)}).encode(), addr)
+        elif j.get('type') == 'motor4':
+            # Individual motors m1..m4
+            speeds = j.get('speeds', [0,0,0,0])
+            if hasattr(driver, 'set_motor'):
+                for i, s in enumerate(speeds[:4]):
+                    driver.set_motor(i, int(s))
+            on_sender_ip(sender_ip)
+            sock.sendto(json.dumps({'type': 'ack', 'seq': j.get('seq')}).encode(), addr)
+        elif j.get('type') == 'move_ticks':
+            # Simple blocking move by encoder ticks on left/right sides
+            target = j.get('target', [0,0])  # [left_ticks, right_ticks]
+            speeds = j.get('speeds', [50,50])
+            if enc is not None and hasattr(driver, 'set_pair'):
+                enc.reset()
+                left_goal, right_goal = int(target[0]), int(target[1])
+                left_speed, right_speed = int(speeds[0]), int(speeds[1])
+                driver.set_pair(left_speed, right_speed)
+                start = time.time()
+                while time.time() - start < 10.0:  # timeout
+                    c = enc.snapshot()
+                    if abs(c[0]) >= abs(left_goal) and abs(c[1]) >= abs(right_goal):
+                        break
+                    time.sleep(0.01)
+                driver.set_pair(0, 0)
+            sock.sendto(json.dumps({'type': 'ack', 'seq': j.get('seq')}).encode(), addr)
+        elif j.get('type') == 'servo':
+            if servo is not None:
+                servo.angle(float(j.get('angle', 90)))
+            on_sender_ip(sender_ip)
+            sock.sendto(json.dumps({'type': 'ack', 'seq': j.get('seq')}).encode(), addr)
+        elif j.get('type') == 'stepper':
+            if stepper is not None:
+                steps = int(j.get('steps', 0))
+                stepper.step(steps)
+            on_sender_ip(sender_ip)
+            sock.sendto(json.dumps({'type': 'ack', 'seq': j.get('seq')}).encode(), addr)
         else:
             sock.sendto(json.dumps({'type': 'error', 'msg': 'unknown', 'seq': j.get('seq')}).encode(), addr)
 
@@ -274,17 +489,35 @@ def main():
 
     print(f"pi_control starting → host={pc_host} telem={telem_port} ctrl={ctrl_port}")
 
-    motors = Motors(pwm_freq)
+    # Choose driver
+    driver_kind = (cfg.get('driver') or 'TB6612').upper()
+    driver = None
+    if driver_kind == 'TB6612':
+        driver = TB6612(cfg)
+    else:
+        driver = Motors(pwm_freq)
     imu = IMU()
     lidar = TFLuna(serial_port, baud)
+    # Encoders (optional)
+    enc = Encoders(cfg, driver if isinstance(driver, TB6612) else None)
+    # Servo (optional)
+    servo_cfg = cfg.get('servo', {})
+    servo = None
+    if 'pin' in servo_cfg:
+        servo = ServoSG90(servo_cfg.get('pin'), servo_cfg.get('freq', 50))
+    # Stepper (optional)
+    step_cfg = cfg.get('stepper', {})
+    stepper = None
+    if 'pins' in step_cfg:
+        stepper = Stepper28BYJ(step_cfg.get('pins'), step_cfg.get('step_delay_ms', 3))
 
     # A control socket for telemetry (needed only for port awareness; data goes via txsock inside telemetry_sender)
     ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-    dest, update_dest = telemetry_sender(pc_host, telem_port, imu, lidar, ctrl_sock)
+    dest, update_dest = telemetry_sender(pc_host, telem_port, imu, lidar, enc, ctrl_sock)
 
     # Start control server, with callback to update telemetry destination to last controller IP
-    t_ctrl = threading.Thread(target=control_server, args=(ctrl_port, motors, update_dest), daemon=True)
+    t_ctrl = threading.Thread(target=control_server, args=(ctrl_port, driver, update_dest, servo, stepper, enc), daemon=True)
     t_ctrl.start()
 
     try:
@@ -293,7 +526,8 @@ def main():
     except KeyboardInterrupt:
         print("Shutting down...")
     finally:
-        motors.stop()
+        if hasattr(driver, 'stop'):
+            driver.stop()
 
 
 if __name__ == "__main__":
