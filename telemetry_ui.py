@@ -26,6 +26,11 @@ import csv
 import math
 import time
 import pygame as pg
+from path_planner import (
+    build_auto_path,
+    load_fruits_for_overlay,
+    read_color_csv,
+)
 
 from advanced import (
     init_bot_control, cleanup,
@@ -36,6 +41,8 @@ from advanced import (
 
 ARENA_WIDTH_CM = 118.1
 ARENA_HEIGHT_CM = 114.3
+
+FRUIT_SIZE_CM = 2.0                             # square side matching Fruit UI
 
 
 def load_image(path: str) -> pg.Surface:
@@ -137,9 +144,16 @@ def main():
     font = pg.font.SysFont(None, 18)
     font_big = pg.font.SysFont(None, 24)
 
-    # Load plan and checkpoints
+    # Load plan and checkpoints; if absent, auto-build from fruit tags
     segments = load_path(script_dir)
     checkpoints = load_checkpoints(script_dir)
+    if not segments or not checkpoints:
+        cps, segs = build_auto_path(script_dir)
+        if cps and segs:
+            checkpoints, segments = cps, segs
+
+    # Load fruits (red/black/green)
+    reds, blacks, greens = load_fruits_for_overlay(script_dir)
 
     # Telemetry init
     init_bot_control(verbose_telemetry=False)
@@ -174,6 +188,10 @@ def main():
                 elif e.key == pg.K_r:
                     segments = load_path(script_dir)
                     checkpoints = load_checkpoints(script_dir)
+                    if not segments or not checkpoints:
+                        cps, segs = build_auto_path(script_dir)
+                        if cps and segs:
+                            checkpoints, segments = cps, segs
                     seg_idx = 0
                     phase = "idle"
                     move_start_lidar_mm = None
@@ -238,7 +256,7 @@ def main():
             scaled = pg.transform.smoothscale(arena_img, (int(iw * scale), int(ih * scale)))
             screen.blit(scaled, offset)
 
-        # Draw path (from checkpoints)
+    # Draw path (from checkpoints)
         # Convert checkpoints (cm) -> image px -> screen
         pts_img = [cm_to_image_xy(x, y, px_per_cm_x, px_per_cm_y) for (x, y) in checkpoints]
         pts_scr = [image_to_screen(p, scale, offset) for p in pts_img]
@@ -295,6 +313,22 @@ def main():
             vy = -math.cos(rad) * 20
             pg.draw.line(screen, (255, 80, 80), (rx, ry), (rx + vx, ry + vy), 3)
 
+        # Draw fruits overlay
+        sq_w = FRUIT_SIZE_CM * px_per_cm_x * scale
+        sq_h = FRUIT_SIZE_CM * px_per_cm_y * scale
+        def draw_fruits(points, color):
+            for (x_cm, y_cm) in points:
+                ix, iy = cm_to_image_xy(x_cm, y_cm, px_per_cm_x, px_per_cm_y)
+                sx, sy = image_to_screen((ix, iy), scale, offset)
+                rect = pg.Rect(0, 0, sq_w, sq_h)
+                rect.center = (sx, sy)
+                pg.draw.rect(screen, color, rect)
+                pg.draw.rect(screen, (220, 220, 220), rect, 1)
+        # Order: green underlay, then red/black on top
+        draw_fruits(greens, (60, 180, 60))   # green default
+        draw_fruits(blacks, (30, 30, 30))    # black
+        draw_fruits(reds, (220, 60, 60))     # red
+
         # Right side HUD panel (transparent overlay)
         hud = pg.Surface((int(ww * 0.34), wh), pg.SRCALPHA)
         hud.fill((0, 0, 0, 140))
@@ -346,6 +380,16 @@ def main():
         draw_text(screen, "R: reload plan   A: auto track on/off   [/]: manual seg", (hud_x, y), font)
         y += 18
         draw_text(screen, "Esc/Q: quit", (hud_x, y), font)
+
+        # Fruit Legend
+        y += 14
+        draw_text(screen, "Fruits:", (hud_x, y), font_big)
+        y += 22
+        draw_text(screen, f"Red targets: {len(reds)}", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Black obstacles: {len(blacks)}", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Green (defaults): {len(greens)}", (hud_x, y), font)
 
         pg.display.flip()
         clock.tick(60)
