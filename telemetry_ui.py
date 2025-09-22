@@ -34,8 +34,8 @@ from advanced import (
 )
 
 
-ARENA_WIDTH_CM = 118.0
-ARENA_HEIGHT_CM = 114.0
+ARENA_WIDTH_CM = 118.1
+ARENA_HEIGHT_CM = 114.3
 
 
 def load_image(path: str) -> pg.Surface:
