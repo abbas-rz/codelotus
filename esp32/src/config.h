@@ -1,8 +1,8 @@
 #pragma once
 
 // Configure WiFi credentials
-#define WIFI_SSID "YOUR_SSID"
-#define WIFI_PASS "YOUR_PASSWORD"
+#define WIFI_SSID "Abbashotspot"
+#define WIFI_PASS "qwertyuiop"
 
 // Ports to match the Pi/PC tooling
 #define CTRL_PORT 9000

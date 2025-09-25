@@ -186,12 +186,19 @@ def main():
                 if e.key in (pg.K_ESCAPE, pg.K_q):
                     running = False
                 elif e.key == pg.K_r:
-                    segments = load_path(script_dir)
-                    checkpoints = load_checkpoints(script_dir)
-                    if not segments or not checkpoints:
-                        cps, segs = build_auto_path(script_dir)
-                        if cps and segs:
-                            checkpoints, segments = cps, segs
+                    # Force regenerate: clear files then rebuild
+                    try:
+                        p1 = os.path.join(script_dir, "path.csv")
+                        p2 = os.path.join(script_dir, "checkpoints_cm.csv")
+                        if os.path.exists(p1): os.remove(p1)
+                        if os.path.exists(p2): os.remove(p2)
+                    except Exception:
+                        pass
+                    cps, segs = build_auto_path(script_dir)
+                    segments = segs or []
+                    checkpoints = cps or []
+                    # Reload fruits too (if user changed tags)
+                    reds, blacks, greens = load_fruits_for_overlay(script_dir)
                     seg_idx = 0
                     phase = "idle"
                     move_start_lidar_mm = None

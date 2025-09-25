@@ -22,9 +22,15 @@ ARENA_WIDTH_CM = 118.1
 ARENA_HEIGHT_CM = 114.3
 
 # Obstacle avoidance parameters
-OBSTACLE_RADIUS_CM = 3.0
-AVOID_MARGIN_CM = 8.0
-PENALTY_WEIGHT = 200.0
+# Enforce that every segment of the path stays at least this far from any non-red fruit (cm)
+MIN_CLEARANCE_CM = 7.0
+OBSTACLE_RADIUS_CM = 3.0          # kept for reference if boundary-based clearance is later desired
+AVOID_MARGIN_CM = 8.0             # kept for tuning; currently not used in hard filter
+PENALTY_WEIGHT = 200.0            # retained for optional scoring, not used in hard filter
+CLEARANCE_CM = MIN_CLEARANCE_CM
+
+# Grid-based routing parameters
+GRID_STEP_CM = 1.0  # grid resolution; finer yields better paths, higher compute
 
 
 def _dist(a, b):
@@ -53,6 +59,169 @@ def _segment_penalty(a, b, obstacles):
         if dmin < clearance:
             penalty += PENALTY_WEIGHT * (clearance - dmin)
     return penalty
+
+
+def _segment_min_clearance(a, b, obstacles):
+    """Return the minimum distance from segment AB to any obstacle center (in cm)."""
+    if not obstacles:
+        return float('inf')
+    (x1, y1), (x2, y2) = a, b
+    dx = x2 - x1
+    dy = y2 - y1
+    denom = dx * dx + dy * dy
+    min_d = float('inf')
+    for (ox, oy) in obstacles:
+        if denom == 0:
+            dmin = _dist(a, (ox, oy))
+        else:
+            t = ((ox - x1) * dx + (oy - y1) * dy) / denom
+            t = max(0.0, min(1.0, t))
+            px = x1 + t * dx
+            py = y1 + t * dy
+            dmin = math.hypot(px - ox, py - oy)
+        if dmin < min_d:
+            min_d = dmin
+    return min_d
+
+
+def _segment_is_clear(a, b, obstacles, clearance=CLEARANCE_CM):
+    """Return True if segment AB keeps at least 'clearance' distance from all obstacles."""
+    return _segment_min_clearance(a, b, obstacles) >= clearance
+
+
+def _polyline_length(path):
+    if not path or len(path) < 2:
+        return 0.0
+    total = 0.0
+    for i in range(1, len(path)):
+        total += _dist(path[i-1], path[i])
+    return total
+
+
+def _build_occupancy(obstacles, step=GRID_STEP_CM):
+    """Return occupancy grid and helpers for planning. True=blocked."""
+    gw = int(math.ceil(ARENA_WIDTH_CM / step)) + 1
+    gh = int(math.ceil(ARENA_HEIGHT_CM / step)) + 1
+    occ = [[False]*gw for _ in range(gh)]
+    # Mark blocked cells if within clearance of any obstacle
+    clr = CLEARANCE_CM
+    clr2 = clr * clr
+    for gy in range(gh):
+        y = gy * step
+        for gx in range(gw):
+            x = gx * step
+            for (ox, oy) in obstacles:
+                dx = x - ox
+                dy = y - oy
+                if dx*dx + dy*dy <= clr2:
+                    occ[gy][gx] = True
+                    break
+    return occ, gw, gh, step
+
+
+def _in_bounds(gx, gy, gw, gh):
+    return 0 <= gx < gw and 0 <= gy < gh
+
+
+def _neighbors8(gx, gy):
+    for dy in (-1, 0, 1):
+        for dx in (-1, 0, 1):
+            if dx == 0 and dy == 0:
+                continue
+            yield gx + dx, gy + dy
+
+
+def _heuristic(a, b):
+    ax, ay = a; bx, by = b
+    return math.hypot(ax - bx, ay - by)
+
+
+def _astar(start_cm, goal_cm, obstacles, step=GRID_STEP_CM):
+    """Plan a polyline from start to goal using A* on a clearance-inflated occupancy grid."""
+    occ, gw, gh, step = _build_occupancy(obstacles, step)
+    def pt_to_grid(p):
+        x, y = p
+        gx = int(round(x / step))
+        gy = int(round(y / step))
+        return gx, gy
+    def grid_to_pt(g):
+        gx, gy = g
+        return (gx * step, gy * step)
+
+    start_g = pt_to_grid(start_cm)
+    goal_g = pt_to_grid(goal_cm)
+    if not _in_bounds(*start_g, gw, gh) or not _in_bounds(*goal_g, gw, gh):
+        return None
+    if occ[start_g[1]][start_g[0]] or occ[goal_g[1]][goal_g[0]]:
+        # Start or goal inside blocked region
+        return None
+
+    import heapq
+    openh = []
+    heapq.heappush(openh, (0.0, start_g))
+    came = {start_g: None}
+    gscore = {start_g: 0.0}
+    while openh:
+        _, cur = heapq.heappop(openh)
+        if cur == goal_g:
+            # Reconstruct
+            path = []
+            c = cur
+            while c is not None:
+                path.append(grid_to_pt(c))
+                c = came[c]
+            path.reverse()
+            return path
+        cx, cy = cur
+        for nx, ny in _neighbors8(cx, cy):
+            if not _in_bounds(nx, ny, gw, gh):
+                continue
+            if occ[ny][nx]:
+                continue
+            # prevent diagonal cutting corners: require adjacent orthogonals to be free
+            if nx != cx and ny != cy:
+                if occ[cy][nx] or occ[ny][cx]:
+                    continue
+            step_cost = math.hypot((nx - cx), (ny - cy)) * step
+            tentative = gscore[cur] + step_cost
+            nb = (nx, ny)
+            if tentative < gscore.get(nb, float('inf')):
+                came[nb] = cur
+                gscore[nb] = tentative
+                f = tentative + _heuristic(grid_to_pt(nb), grid_to_pt(goal_g))
+                heapq.heappush(openh, (f, nb))
+    return None
+
+
+def _smooth_polyline(path_cm, obstacles):
+    if not path_cm or len(path_cm) <= 2:
+        return path_cm
+    smoothed = [path_cm[0]]
+    i = 0
+    while i < len(path_cm) - 1:
+        j = len(path_cm) - 1
+        # Find the farthest j such that segment (i->j) is clear
+        while j > i + 1 and not _segment_is_clear(path_cm[i], path_cm[j], obstacles):
+            j -= 1
+        smoothed.append(path_cm[j])
+        i = j
+    return smoothed
+
+
+def _plan_segment_with_clearance(a, b, obstacles):
+    """Return a clearance-respecting polyline from a to b (inclusive)."""
+    if _segment_is_clear(a, b, obstacles):
+        return [a, b]
+    path = _astar(a, b, obstacles, GRID_STEP_CM)
+    if path is None:
+        return None
+    path = _smooth_polyline(path, obstacles)
+    # Ensure back to exact endpoints
+    if path[0] != a:
+        path[0] = a
+    if path[-1] != b:
+        path[-1] = b
+    return path
 
 
 def read_color_csv(script_dir, name):
@@ -116,7 +285,9 @@ def write_path(script_dir, segs):
 
 def load_path_config(script_dir, defaults=None):
     if defaults is None:
-        defaults = ((10.0, ARENA_HEIGHT_CM - 10.0), (10.0, ARENA_HEIGHT_CM - 10.0))
+        # Default: bottom-right-ish for both start and end
+        defaults = ((ARENA_WIDTH_CM - 10.0, ARENA_HEIGHT_CM - 10.0),
+                    (ARENA_WIDTH_CM - 10.0, ARENA_HEIGHT_CM - 10.0))
     cfg_path = os.path.join(script_dir, "path_config.json")
     if not os.path.exists(cfg_path):
         return defaults
@@ -156,24 +327,45 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None):
     if not reds:
         return [], []
 
-    # Greedy NN with obstacle penalty
+    # Greedy selection by actual routed path length (A*), favoring feasible and maximally clear legs
     remaining = reds[:]
     order = []
     cur = start_xy
     while remaining:
-        best = None
-        best_cost = 1e18
+        scored = []
         for r in remaining:
-            base = _dist(cur, r)
-            cost = base + _segment_penalty(cur, r, obstacles)
-            if cost < best_cost:
-                best_cost = cost
-                best = r
-        order.append(best)
-        remaining.remove(best)
-        cur = best
+            poly = _plan_segment_with_clearance(cur, r, obstacles)
+            if poly is None:
+                continue
+            scored.append((_polyline_length(poly), r, poly))
+        if not scored:
+            # fallback: choose nearest by Euclidean distance
+            chosen = min(remaining, key=lambda r: _dist(cur, r))
+            poly = [cur, chosen] if _segment_is_clear(cur, chosen, obstacles) else _plan_segment_with_clearance(cur, chosen, obstacles)
+        else:
+            scored.sort(key=lambda t: t[0])
+            _, chosen, poly = scored[0]
+        # Append intermediate waypoints (excluding current)
+        if poly and len(poly) > 1:
+            # Avoid duplicating cur
+            for wp in poly[1:]:
+                order.append(wp)
+        remaining.remove(chosen)
+        cur = chosen
 
-    checkpoints = [start_xy] + order + [end_xy]
+    # Validate last hop to end respects clearance; insert waypoints if needed
+    tail = _plan_segment_with_clearance(cur, end_xy, obstacles)
+    if tail is None:
+        tail = [cur, end_xy]
+    checkpoints = [start_xy]
+    # order might contain intermediate waypoints and reds; ensure we don't duplicate start
+    for wp in order:
+        if len(checkpoints) == 0 or wp != checkpoints[-1]:
+            checkpoints.append(wp)
+    # Append tail except first point (it's cur and likely already present)
+    for wp in tail[1:]:
+        if wp != checkpoints[-1]:
+            checkpoints.append(wp)
 
     # Build path relative turns
     segs = []
