@@ -1,0 +1,269 @@
+{
+  "version": 1,
+  "author": "ESP32 4-motor platform simulation",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_m1_pwm",
+      "top": -200,
+      "left": 300,
+      "attrs": {
+        "color": "red",
+        "label": "PWMA"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_m1_dir1",
+      "top": -200,
+      "left": 350,
+      "attrs": {
+        "color": "green",
+        "label": "AIN1"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_m1_dir2",
+      "top": -200,
+      "left": 400,
+      "attrs": {
+        "color": "blue",
+        "label": "AIN2"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_m2_pwm",
+      "top": -150,
+      "left": 300,
+      "attrs": {
+        "color": "red",
+        "label": "PWMB"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_m2_dir1",
+      "top": -150,
+      "left": 350,
+      "attrs": {
+        "color": "green",
+        "label": "BIN1"
+      }
+    },
+    {
+      "type": "wokwi-led",
+      "id": "led_m2_dir2",
+      "top": -150,
+      "left": 400,
+      "attrs": {
+        "color": "blue",
+        "label": "BIN2"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_enc1",
+      "top": -200,
+      "left": 500,
+      "attrs": {
+        "color": "grey",
+        "label": "ENCA_A"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_enc1b",
+      "top": -200,
+      "left": 550,
+      "attrs": {
+        "color": "grey",
+        "label": "ENCA_B"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_enc2",
+      "top": -150,
+      "left": 500,
+      "attrs": {
+        "color": "grey",
+        "label": "ENCB_A"
+      }
+    },
+    {
+      "type": "wokwi-pushbutton",
+      "id": "btn_enc2b",
+      "top": -150,
+      "left": 550,
+      "attrs": {
+        "color": "grey",
+        "label": "ENCB_B"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r1",
+      "top": -200,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r2",
+      "top": -180,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r3",
+      "top": -160,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r4",
+      "top": -140,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r5",
+      "top": -120,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r6",
+      "top": -100,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r7",
+      "top": -80,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r8",
+      "top": -60,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r9",
+      "top": -40,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r10",
+      "top": -20,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r11",
+      "top": 0,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r12",
+      "top": 20,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    },
+    {
+      "type": "wokwi-resistor",
+      "id": "r13",
+      "top": 40,
+      "left": 250,
+      "attrs": {
+        "value": "220"
+      }
+    }
+  ],
+  "connections": [
+    ["esp:D25", "r1:1", "purple", []],
+    ["r1:2", "led_m1_pwm:A", "purple", []],
+    ["led_m1_pwm:C", "esp:GND", "black", []],
+    
+    ["esp:D26", "r2:1", "blue", []],
+    ["r2:2", "led_m1_dir1:A", "blue", []],
+    ["led_m1_dir1:C", "esp:GND", "black", []],
+    
+    ["esp:D27", "r3:1", "green", []],
+    ["r3:2", "led_m1_dir2:A", "green", []],
+    ["led_m1_dir2:C", "esp:GND", "black", []],
+    
+    ["esp:D32", "r4:1", "purple", []],
+    ["r4:2", "led_m2_pwm:A", "purple", []],
+    ["led_m2_pwm:C", "esp:GND", "black", []],
+    
+    ["esp:D33", "r5:1", "blue", []],
+    ["r5:2", "led_m2_dir1:A", "blue", []],
+    ["led_m2_dir1:C", "esp:GND", "black", []],
+    
+    ["esp:D14", "r6:1", "green", []],
+    ["r6:2", "led_m2_dir2:A", "green", []],
+    ["led_m2_dir2:C", "esp:GND", "black", []],
+    
+    ["btn_enc1:1.l", "esp:D34", "yellow", []],
+    ["btn_enc1:2.l", "esp:GND", "black", []],
+    
+    ["btn_enc1b:1.l", "esp:D36", "orange", []],
+    ["btn_enc1b:2.l", "esp:GND", "black", []],
+    
+    ["btn_enc2:1.l", "esp:D39", "yellow", []],
+    ["btn_enc2:2.l", "esp:GND", "black", []],
+    
+    ["btn_enc2b:1.l", "esp:D35", "orange", []],
+    ["btn_enc2b:2.l", "esp:GND", "black", []]
+  ],
+  "dependencies": {}
+}

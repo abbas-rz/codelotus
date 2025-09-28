@@ -1,0 +1,171 @@
+{
+  "version": 1,
+  "author": "Created for ESP32 4-motor robot platform",
+  "editor": "wokwi",
+  "parts": [
+    {
+      "type": "wokwi-esp32-devkit-v1",
+      "id": "esp",
+      "top": 0,
+      "left": 0,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-tb6612-breakout",
+      "id": "tb6612_1",
+      "top": -200,
+      "left": 300,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-tb6612-breakout",
+      "id": "tb6612_2",
+      "top": 200,
+      "left": 300,
+      "attrs": {}
+    },
+    {
+      "type": "wokwi-dc-motor",
+      "id": "motor1",
+      "top": -300,
+      "left": 600,
+      "attrs": {
+        "label": "Front Left"
+      }
+    },
+    {
+      "type": "wokwi-dc-motor",
+      "id": "motor2",
+      "top": -100,
+      "left": 600,
+      "attrs": {
+        "label": "Front Right"
+      }
+    },
+    {
+      "type": "wokwi-dc-motor",
+      "id": "motor3",
+      "top": 100,
+      "left": 600,
+      "attrs": {
+        "label": "Rear Left"
+      }
+    },
+    {
+      "type": "wokwi-dc-motor",
+      "id": "motor4",
+      "top": 300,
+      "left": 600,
+      "attrs": {
+        "label": "Rear Right"
+      }
+    },
+    {
+      "type": "wokwi-rotary-encoder-ky-040",
+      "id": "encoder1",
+      "top": -350,
+      "left": 800,
+      "attrs": {
+        "label": "Enc1"
+      }
+    },
+    {
+      "type": "wokwi-rotary-encoder-ky-040",
+      "id": "encoder2",
+      "top": -150,
+      "left": 800,
+      "attrs": {
+        "label": "Enc2"
+      }
+    },
+    {
+      "type": "wokwi-rotary-encoder-ky-040",
+      "id": "encoder3",
+      "top": 50,
+      "left": 800,
+      "attrs": {
+        "label": "Enc3"
+      }
+    },
+    {
+      "type": "wokwi-rotary-encoder-ky-040",
+      "id": "encoder4",
+      "top": 250,
+      "left": 800,
+      "attrs": {
+        "label": "Enc4"
+      }
+    },
+    {
+      "type": "wokwi-breadboard-power",
+      "id": "power",
+      "top": -450,
+      "left": 100,
+      "attrs": {}
+    }
+  ],
+  "connections": [
+    ["esp:3V3", "power:VCC", "red", []],
+    ["esp:GND", "power:GND", "black", []],
+    
+    ["esp:D33", "tb6612_1:STBY", "orange", []],
+    ["esp:D33", "tb6612_2:STBY", "orange", []],
+    
+    ["esp:D25", "tb6612_1:PWMA", "purple", []],
+    ["esp:D26", "tb6612_1:AIN1", "blue", []],
+    ["esp:D27", "tb6612_1:AIN2", "green", []],
+    
+    ["esp:D14", "tb6612_1:PWMB", "purple", []],
+    ["esp:D18", "tb6612_1:BIN1", "blue", []],
+    ["esp:D19", "tb6612_1:BIN2", "green", []],
+    
+    ["esp:D23", "tb6612_2:PWMA", "purple", []],
+    ["esp:D21", "tb6612_2:AIN1", "blue", []],
+    ["esp:D22", "tb6612_2:AIN2", "green", []],
+    
+    ["esp:D32", "tb6612_2:PWMB", "purple", []],
+    ["esp:D13", "tb6612_2:BIN1", "blue", []],
+    ["esp:D17", "tb6612_2:BIN2", "green", []],
+    
+    ["power:VCC", "tb6612_1:VCC", "red", []],
+    ["power:GND", "tb6612_1:GND", "black", []],
+    ["power:VCC", "tb6612_2:VCC", "red", []],
+    ["power:GND", "tb6612_2:GND", "black", []],
+    
+    ["power:VCC", "tb6612_1:VMOT", "red", []],
+    ["power:VCC", "tb6612_2:VMOT", "red", []],
+    
+    ["tb6612_1:AO1", "motor1:+", "red", []],
+    ["tb6612_1:AO2", "motor1:-", "black", []],
+    
+    ["tb6612_1:BO1", "motor2:+", "red", []],
+    ["tb6612_1:BO2", "motor2:-", "black", []],
+    
+    ["tb6612_2:AO1", "motor3:+", "red", []],
+    ["tb6612_2:AO2", "motor3:-", "black", []],
+    
+    ["tb6612_2:BO1", "motor4:+", "red", []],
+    ["tb6612_2:BO2", "motor4:-", "black", []],
+    
+    ["esp:D34", "encoder1:CLK", "yellow", []],
+    ["esp:D35", "encoder1:DT", "orange", []],
+    ["power:VCC", "encoder1:VCC", "red", []],
+    ["power:GND", "encoder1:GND", "black", []],
+    
+    ["esp:D36", "encoder2:CLK", "yellow", []],
+    ["esp:D39", "encoder2:DT", "orange", []],
+    ["power:VCC", "encoder2:VCC", "red", []],
+    ["power:GND", "encoder2:GND", "black", []],
+    
+    ["esp:D4", "encoder3:CLK", "yellow", []],
+    ["esp:D5", "encoder3:DT", "orange", []],
+    ["power:VCC", "encoder3:VCC", "red", []],
+    ["power:GND", "encoder3:GND", "black", []],
+    
+    ["esp:D2", "encoder4:CLK", "yellow", []],
+    ["esp:D15", "encoder4:DT", "orange", []],
+    ["power:VCC", "encoder4:VCC", "red", []],
+    ["power:GND", "encoder4:GND", "black", []]
+  ],
+  "dependencies": {}
+}

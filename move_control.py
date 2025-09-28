@@ -1,15 +1,20 @@
 #!/usr/bin/env python3
 """
-Robot Movement Control with Rotation and Distance
+Robot Movement Control with Pure Encoder-Based Navigation
 Usage: python move_control.py
-Takes rotation (degrees) and movement (cm) inputs to control the robot.
+Takes rotation (degrees) and movement (cm) inputs to control the robot using only encoder data.
+
+Encoder Specifications:
+- PPR (Pulses Per Rotation): 1500
+- Wheel diameter: 4.4 cm
+- Bot rotation: 22.3 pulses per degree
 """
 import time
 import sys
+import math
 from advanced import (
-    init_bot_control, cleanup, get_rotation_degrees, reset_rotation,
-    get_current_distance, move_forward, move_backward, turn_left, turn_right,
-    stop_motors, get_latest_imu, is_lidar_data_fresh
+    init_bot_control, cleanup, get_latest_encoders, move_by_ticks,
+    stop_motors
 )
 
 class RobotController:

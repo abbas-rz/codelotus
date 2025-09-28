@@ -8,11 +8,18 @@ import socket, threading, json, time
 from pynput import keyboard
 
 # ----------------------
-# Network Configuration
+# Network Configuration  
 # ----------------------
-RPI_IP = '192.168.1.52'   # <-- set to your Pi IP
+RPI_IP = 'esp32-robot.local'   # <-- ESP32 mDNS hostname (try this first)
 RPI_CTRL_PORT = 9000
 LOCAL_TELEM_PORT = 9001
+
+# Fallback IPs to try if mDNS fails
+FALLBACK_IPS = [
+    'esp32-robot.local',
+    '10.210.244.100',    # Static IP if configured
+    '192.168.1.100',     # Other common static IP
+]
 
 # ----------------------
 # Drive config (tuneable)
@@ -65,9 +72,15 @@ def initialize_sockets():
     global ctrl_sock, telem_sock
     if ctrl_sock is None:
         ctrl_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        print(f"Created control socket")
     if telem_sock is None:
         telem_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        telem_sock.bind(('', LOCAL_TELEM_PORT))
+        try:
+            telem_sock.bind(('', LOCAL_TELEM_PORT))
+            print(f"Telemetry socket bound to port {LOCAL_TELEM_PORT}")
+        except Exception as e:
+            print(f"Failed to bind telemetry socket: {e}")
+            raise
 
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
@@ -76,13 +89,30 @@ def clamp(x, lo, hi):
 # Core Motor Control
 # ----------------------
 def send_motor(left, right):
-    global seq
+    global seq, RPI_IP
     if ctrl_sock is None:
         initialize_sockets()
+    
     msg = {'type':'motor','left':int(left),'right':int(right),
            'seq':seq, 'ts': int(time.time()*1000)}
     seq += 1
-    ctrl_sock.sendto(json.dumps(msg).encode(), (RPI_IP, RPI_CTRL_PORT))
+    
+    # Try sending to current RPI_IP first, then fallbacks
+    ips_to_try = [RPI_IP] + [ip for ip in FALLBACK_IPS if ip != RPI_IP]
+    
+    for ip in ips_to_try:
+        try:
+            ctrl_sock.sendto(json.dumps(msg).encode(), (ip, RPI_CTRL_PORT))
+            if verbose:
+                print(f"Sent motor command to {ip}")
+            break  # Success, don't try other IPs
+        except Exception as e:
+            if verbose:
+                print(f"Failed to send to {ip}: {e}")
+            continue  # Try next IP
+    else:
+        if verbose:
+            print("Failed to send motor command to any IP")
 
 def stop_motors(): send_motor(0, 0)
 def move_forward(speed): send_motor(clamp(speed, 0, MOTOR_MAX_LEFT),
@@ -267,9 +297,14 @@ def telem_loop(verbose=True):
     if telem_sock is None:
         initialize_sockets()
 
+    print(f"Telemetry loop started, waiting for messages on port {LOCAL_TELEM_PORT}...")
+    
     while True:
         try:
+            # Add timeout so we can see if we're waiting for packets
+            telem_sock.settimeout(5.0)  # 5 second timeout
             data, addr = telem_sock.recvfrom(2048)
+            print(f"Received packet from {addr}: {len(data)} bytes")
             j = json.loads(data.decode())
 
             # --- LIDAR ---
@@ -316,13 +351,33 @@ def telem_loop(verbose=True):
                 if verbose:
                     print(f"ENC m1={latest_encoders['m1']} m2={latest_encoders['m2']} m3={latest_encoders['m3']} m4={latest_encoders['m4']}  ts={j.get('ts',0)}")
 
+            # --- Alive Messages ---
+            elif j.get('type') == 'alive':
+                device = j.get('device', 'Unknown')
+                esp_ip = j.get('ip', 'Unknown')
+                timestamp = j.get('ts', 0)
+                if verbose:
+                    print(f"🤖 ALIVE: {device} at {esp_ip} (uptime: {timestamp}ms)")
+                # Automatically update RPI_IP if we get an alive message
+                global RPI_IP
+                if esp_ip != 'Unknown' and esp_ip != RPI_IP:
+                    print(f"📡 Auto-updating ESP32 IP from {RPI_IP} to {esp_ip}")
+                    RPI_IP = esp_ip
+
+        except socket.timeout:
+            print("⏰ No telemetry received in 5 seconds... still waiting")
+            continue
         except Exception as e:
             if verbose:
                 print(f"Telemetry error: {e}")
+            time.sleep(0.1)
 
 def start_telemetry_thread(verbose=True):
+    print(f"Starting telemetry thread, listening on port {LOCAL_TELEM_PORT}")
+    print(f"Will send commands to ESP32 at {RPI_IP}:{RPI_CTRL_PORT}")
     telem_thread = threading.Thread(target=telem_loop, args=(verbose,), daemon=True)
     telem_thread.start()
+    print("Telemetry thread started")
     return telem_thread
 
 # ----------------------

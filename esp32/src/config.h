@@ -4,44 +4,44 @@
 #define WIFI_SSID "Abbashotspot"
 #define WIFI_PASS "qwertyuiop"
 
-// Ports to match the Pi/PC tooling
+// PC hostname for direct communication
+#define PC_HOSTNAME "msi.local"
+
+// mDNS hostname (will be accessible as esp32-robot.local)
+#define MDNS_HOSTNAME "esp32-robot"
+
+// Static IP Configuration (optional - comment out for DHCP)
+#define STATIC_IP_ENABLE false  // Disable static IP, use DHCP + mDNS instead
+#define STATIC_IP       IPAddress(10, 210, 244, 100)   // Fixed IP for ESP32 (matching your PC's network)
+#define GATEWAY_IP      IPAddress(10, 210, 244, 133)   // Router IP (from your ipconfig)
+#define SUBNET_MASK     IPAddress(255, 255, 255, 0)    // Subnet mask
+#define DNS_PRIMARY     IPAddress(8, 8, 8, 8)          // Google DNS
+#define DNS_SECONDARY   IPAddress(8, 8, 4, 4)          // Google DNS backup
+
+// Ports to match advanced.py
 #define CTRL_PORT 9000
 #define TELEM_PORT 9001
 
 // Telemetry frequency (ms)
 #define ENCODER_TELEM_INTERVAL_MS 50
 
-// TB6612 pin mapping (4 motors across two TB6612 drivers)
-// Motor index mapping: m1=front-left, m2=front-right, m3=rear-left, m4=rear-right
-// Adjust as needed for your wiring
-#define PIN_STBY 33
+// TB6612 pin mapping (2 motors - Motor A and Motor B)
+// Motor A = Motor 1, Motor B = Motor 2
+#define PIN_STBY 2
 
-#define M1_PWM 25
-#define M1_IN1 26
-#define M1_IN2 27
+#define M1_PWM 25   // PWMA
+#define M1_IN1 26   // AIN1
+#define M1_IN2 27   // AIN2
 
-#define M2_PWM 14
-#define M2_IN1 18
-#define M2_IN2 19
+#define M2_PWM 32   // PWMB
+#define M2_IN1 33   // BIN1
+#define M2_IN2 14   // BIN2
 
-#define M3_PWM 23
-#define M3_IN1 21
-#define M3_IN2 22
-
-#define M4_PWM 32
-#define M4_IN1 13
-#define M4_IN2 17
-
-// Encoder pins (quadrature) for 4 wheels
-// Prefer input-only pins (34-39) where available; add others as needed.
-#define ENC1_A 34
-#define ENC1_B 35
-#define ENC2_A 36
-#define ENC2_B 39
-#define ENC3_A 4
-#define ENC3_B 5
-#define ENC4_A 2
-#define ENC4_B 15
+// Encoder pins (quadrature) for 2 motors
+#define ENC1_A 34   // ENCA_A
+#define ENC1_B 36   // ENCA_B
+#define ENC2_A 39   // ENCB_A  
+#define ENC2_B 35   // ENCB_B
 
 // PWM frequency
 #define PWM_FREQ 20000
