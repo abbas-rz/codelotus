@@ -69,9 +69,9 @@ void encodersSetup(){
 inline int32_t getCount(int i){ return (int32_t)(enc[i].getCount() - encZero[i]); }
 
 void sendEncoders(){
-  if(!lastCtlIp) return;
   StaticJsonDocument<256> doc;
   doc["type"] = "encoders";
+  doc["ts"] = millis();
   JsonObject counts = doc.createNestedObject("counts");
   counts["m1"] = getCount(0);  // Left motor
   counts["m2"] = getCount(1);  // Right motor
@@ -79,40 +79,107 @@ void sendEncoders(){
   counts["m4"] = getCount(1);  // Same as m2 for compatibility
   char buf[256];
   size_t n = serializeJson(doc, buf, sizeof(buf));
-  udp.writeTo((uint8_t*)buf, n, lastCtlIp, TELEM_PORT);
+  
+  bool sent = false;
+  
+  if(USE_ACCESS_POINT) {
+    // In AP mode, send to broadcast or known controller
+    if(lastCtlIp) {
+      udp.writeTo((uint8_t*)buf, n, lastCtlIp, TELEM_PORT);
+      Serial.printf("Sent encoders: m1=%d m2=%d to controller %s\n", getCount(0), getCount(1), lastCtlIp.toString().c_str());
+      sent = true;
+    }
+    
+    // Also broadcast to all connected clients
+    IPAddress broadcast = WiFi.softAPIP();
+    broadcast[3] = 255;  // Make it 192.168.4.255
+    udp.writeTo((uint8_t*)buf, n, broadcast, TELEM_PORT);
+    Serial.printf("Broadcast encoders: m1=%d m2=%d to %s\n", getCount(0), getCount(1), broadcast.toString().c_str());
+    sent = true;
+    
+  } else {
+    // Station mode - original behavior
+    // Try to send to PC hostname first
+    IPAddress pcIP;
+    if(WiFi.hostByName(PC_HOSTNAME, pcIP)) {
+      udp.writeTo((uint8_t*)buf, n, pcIP, TELEM_PORT);
+      Serial.printf("Sent encoders: m1=%d m2=%d to %s\n", getCount(0), getCount(1), pcIP.toString().c_str());
+      sent = true;
+    }
+    
+    // Also send to last known controller IP if we have one
+    if(lastCtlIp && lastCtlIp != pcIP) {
+      udp.writeTo((uint8_t*)buf, n, lastCtlIp, TELEM_PORT);
+      Serial.printf("Sent encoders to controller: %s\n", lastCtlIp.toString().c_str());
+      sent = true;
+    }
+    
+    // Fallback: broadcast if nothing else worked
+    if(!sent) {
+      IPAddress broadcast = WiFi.localIP();
+      broadcast[3] = 255;
+      udp.writeTo((uint8_t*)buf, n, broadcast, TELEM_PORT);
+      Serial.printf("Broadcast encoders: m1=%d m2=%d\n", getCount(0), getCount(1));
+    }
+  }
 }
 
 void sendAliveMessage(){
-  // Send alive message directly to PC
+  // Send alive message
   StaticJsonDocument<128> doc;
   doc["type"] = "alive";
   doc["device"] = "ESP32_Robot";
-  doc["ip"] = WiFi.localIP().toString();
+  
+  if(USE_ACCESS_POINT) {
+    doc["ip"] = WiFi.softAPIP().toString();
+    doc["mode"] = "AP";
+    doc["ssid"] = AP_SSID;
+  } else {
+    doc["ip"] = WiFi.localIP().toString();
+    doc["mode"] = "STA";
+  }
+  
   doc["ts"] = millis();
   char buf[128];
   size_t n = serializeJson(doc, buf, sizeof(buf));
   
   Serial.printf("Sending alive message: %s\n", buf);
   
-  // Send to broadcast address first
-  IPAddress broadcast = WiFi.localIP();
-  broadcast[3] = 255; // Make it x.x.x.255 for broadcast
-  udp.writeTo((uint8_t*)buf, n, broadcast, TELEM_PORT);
-  Serial.printf("Sent to broadcast %s:%d\n", broadcast.toString().c_str(), TELEM_PORT);
-  
-  // Try to resolve and send directly to PC hostname
-  IPAddress pcIP;
-  if(WiFi.hostByName(PC_HOSTNAME, pcIP)) {
-    udp.writeTo((uint8_t*)buf, n, pcIP, TELEM_PORT);
-    Serial.printf("Sent directly to PC %s (%s):%d\n", PC_HOSTNAME, pcIP.toString().c_str(), TELEM_PORT);
+  if(USE_ACCESS_POINT) {
+    // In AP mode, broadcast to all connected clients
+    IPAddress broadcast = WiFi.softAPIP();
+    broadcast[3] = 255; // Make it 192.168.4.255
+    udp.writeTo((uint8_t*)buf, n, broadcast, TELEM_PORT);
+    Serial.printf("Sent to AP broadcast %s:%d\n", broadcast.toString().c_str(), TELEM_PORT);
+    
+    // Also send to known controller if we have one
+    if(lastCtlIp) {
+      udp.writeTo((uint8_t*)buf, n, lastCtlIp, TELEM_PORT);
+      Serial.printf("Sent to known controller %s:%d\n", lastCtlIp.toString().c_str(), TELEM_PORT);
+    }
+    
   } else {
-    Serial.printf("Could not resolve %s\n", PC_HOSTNAME);
-  }
-  
-  // Also send to lastCtlIp if we have one
-  if(lastCtlIp) {
-    udp.writeTo((uint8_t*)buf, n, lastCtlIp, TELEM_PORT);
-    Serial.printf("Sent to known controller %s:%d\n", lastCtlIp.toString().c_str(), TELEM_PORT);
+    // Station mode - original behavior
+    // Send to broadcast address first
+    IPAddress broadcast = WiFi.localIP();
+    broadcast[3] = 255; // Make it x.x.x.255 for broadcast
+    udp.writeTo((uint8_t*)buf, n, broadcast, TELEM_PORT);
+    Serial.printf("Sent to broadcast %s:%d\n", broadcast.toString().c_str(), TELEM_PORT);
+    
+    // Try to resolve and send directly to PC hostname
+    IPAddress pcIP;
+    if(WiFi.hostByName(PC_HOSTNAME, pcIP)) {
+      udp.writeTo((uint8_t*)buf, n, pcIP, TELEM_PORT);
+      Serial.printf("Sent directly to PC %s (%s):%d\n", PC_HOSTNAME, pcIP.toString().c_str(), TELEM_PORT);
+    } else {
+      Serial.printf("Could not resolve %s\n", PC_HOSTNAME);
+    }
+    
+    // Also send to lastCtlIp if we have one
+    if(lastCtlIp) {
+      udp.writeTo((uint8_t*)buf, n, lastCtlIp, TELEM_PORT);
+      Serial.printf("Sent to known controller %s:%d\n", lastCtlIp.toString().c_str(), TELEM_PORT);
+    }
   }
 }
 
@@ -164,67 +231,96 @@ void setup(){
   delay(1000);
   Serial.println("ESP32 Robot Starting...");
   
-  WiFi.mode(WIFI_STA);
-  
-  // Configure static IP if enabled
-  #ifdef STATIC_IP_ENABLE
-  if(STATIC_IP_ENABLE) {
-    if(!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY, DNS_SECONDARY)) {
-      Serial.println("Failed to configure static IP");
-    } else {
-      Serial.println("Static IP configured");
-    }
-  }
-  #endif
-  
-  Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASS);
-  
-  int attempts = 0;
-  while(WiFi.status() != WL_CONNECTED && attempts < 60) { // 30 second timeout
-    Serial.print(".");
-    delay(500);
-    attempts++;
+  // Choose WiFi mode
+  if(USE_ACCESS_POINT) {
+    // Access Point Mode
+    Serial.println("Starting in Access Point mode...");
+    WiFi.mode(WIFI_AP);
     
-    // Print status every 10 attempts
-    if(attempts % 10 == 0) {
-      Serial.printf("\nWiFi Status: %d (attempt %d/60)\n", WiFi.status(), attempts);
-      if(attempts == 20) {
-        Serial.println("Still trying... Check if hotspot is running and credentials are correct");
+    // Configure AP with fixed IP
+    WiFi.softAPConfig(AP_IP, AP_GATEWAY, AP_SUBNET);
+    
+    // Start the Access Point
+    bool success = WiFi.softAP(AP_SSID, AP_PASS);
+    
+    if(success) {
+      Serial.println("✅ Access Point started successfully!");
+      Serial.printf("SSID: %s\n", AP_SSID);
+      Serial.printf("Password: %s\n", AP_PASS);
+      Serial.printf("IP Address: %s\n", WiFi.softAPIP().toString().c_str());
+      Serial.printf("Connect your PC to this WiFi network to control the robot\n");
+    } else {
+      Serial.println("❌ Failed to start Access Point!");
+      Serial.println("Restarting in 5 seconds...");
+      delay(5000);
+      ESP.restart();
+    }
+    
+  } else {
+    // Station Mode (original behavior)
+    Serial.println("Starting in Station mode...");
+    WiFi.mode(WIFI_STA);
+    
+    // Configure static IP if enabled
+    #ifdef STATIC_IP_ENABLE
+    if(STATIC_IP_ENABLE) {
+      if(!WiFi.config(STATIC_IP, GATEWAY_IP, SUBNET_MASK, DNS_PRIMARY, DNS_SECONDARY)) {
+        Serial.println("Failed to configure static IP");
+      } else {
+        Serial.println("Static IP configured");
       }
     }
-  }
-  
-  if(WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nFailed to connect to WiFi!");
-    Serial.printf("WiFi SSID: %s\n", WIFI_SSID);
-    Serial.println("Please check:");
-    Serial.println("1. Hotspot is running");  
-    Serial.println("2. SSID and password are correct");
-    Serial.println("3. ESP32 is in range");
-    Serial.println("Restarting in 5 seconds...");
-    delay(5000);
-    ESP.restart();
-  }
-  
-  Serial.println();
-  Serial.print("Connected! IP address: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Gateway: ");
-  Serial.println(WiFi.gatewayIP());
-  Serial.print("Subnet: ");
-  Serial.println(WiFi.subnetMask());
-  Serial.print("RSSI: ");
-  Serial.println(WiFi.RSSI());
-  
-  // Test PC hostname resolution
-  Serial.printf("Testing connection to PC: %s\n", PC_HOSTNAME);
-  IPAddress pcIP;
-  if(WiFi.hostByName(PC_HOSTNAME, pcIP)) {
-    Serial.printf("✅ Successfully resolved %s to %s\n", PC_HOSTNAME, pcIP.toString().c_str());
-  } else {
-    Serial.printf("❌ Could not resolve %s\n", PC_HOSTNAME);
-    Serial.println("Make sure your PC is on the same network and mDNS is working");
+    #endif
+    
+    Serial.printf("Connecting to WiFi: %s\n", WIFI_SSID);
+    WiFi.begin(WIFI_SSID, WIFI_PASS);
+    
+    int attempts = 0;
+    while(WiFi.status() != WL_CONNECTED && attempts < 60) { // 30 second timeout
+      Serial.print(".");
+      delay(500);
+      attempts++;
+      
+      // Print status every 10 attempts
+      if(attempts % 10 == 0) {
+        Serial.printf("\nWiFi Status: %d (attempt %d/60)\n", WiFi.status(), attempts);
+        if(attempts == 20) {
+          Serial.println("Still trying... Check if hotspot is running and credentials are correct");
+        }
+      }
+    }
+    
+    if(WiFi.status() != WL_CONNECTED) {
+      Serial.println("\nFailed to connect to WiFi!");
+      Serial.printf("WiFi SSID: %s\n", WIFI_SSID);
+      Serial.println("Please check:");
+      Serial.println("1. Hotspot is running");  
+      Serial.println("2. SSID and password are correct");
+      Serial.println("3. ESP32 is in range");
+      Serial.println("Restarting in 5 seconds...");
+      delay(5000);
+      ESP.restart();
+    }
+    
+    Serial.println();
+    Serial.print("Connected! IP address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("Gateway: ");
+    Serial.println(WiFi.gatewayIP());
+    Serial.print("Subnet: ");
+    Serial.println(WiFi.subnetMask());
+    Serial.print("RSSI: ");
+    Serial.println(WiFi.RSSI());
+    
+    // Test PC hostname resolution
+    Serial.printf("Testing connection to PC: %s\n", PC_HOSTNAME);
+    IPAddress pcIP;
+    if(WiFi.hostByName(PC_HOSTNAME, pcIP)) {
+      Serial.printf("✅ Successfully resolved %s to %s\n", PC_HOSTNAME, pcIP.toString().c_str());
+    } else {
+      Serial.printf("❌ Could not resolve %s\n", PC_HOSTNAME);
+      Serial.println("Make sure your PC is on the same network and mDNS is working");
+    }
   }
   
   // Initialize mDNS

@@ -14,17 +14,32 @@ import sys
 import math
 from advanced import (
     init_bot_control, cleanup, get_latest_encoders, move_by_ticks,
-    stop_motors
+    stop_motors, is_encoder_data_available, wait_for_encoder_data
 )
 
 class RobotController:
     def __init__(self):
-        self.rotation_tolerance = 5.0  # degrees - allow ±5 degree error
-        self.distance_tolerance = 2.0  # cm
-        self.turn_speed = 20  # motor speed for turning
-        self.move_speed = 20  # motor speed for movement
-        self.max_turn_time = 30.0  # maximum time to attempt a turn (seconds)
+        # Robot specifications
+        self.PPR = 1500  # Pulses per rotation
+        self.WHEEL_DIAMETER = 4.4  # cm
+        self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
+        self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
+        self.PULSES_PER_DEGREE = 22.3  # pulses per degree of bot rotation
+        
+        # Control parameters
+        self.rotation_tolerance = 2.0  # degrees - allow ±2 degree error
+        self.distance_tolerance = 1.0  # cm
+        self.turn_speed = 60  # motor speed for turning
+        self.move_speed = 60  # motor speed for movement
+        self.max_turn_time = 10.0  # maximum time to attempt a turn (seconds)
         self.max_move_time = 30.0  # maximum time to attempt a move (seconds)
+        
+        print(f"Robot Encoder Specs:")
+        print(f"  PPR: {self.PPR}")
+        print(f"  Wheel diameter: {self.WHEEL_DIAMETER} cm")
+        print(f"  Wheel circumference: {self.WHEEL_CIRCUMFERENCE:.2f} cm")
+        print(f"  Pulses per cm: {self.PULSES_PER_CM:.2f}")
+        print(f"  Pulses per degree rotation: {self.PULSES_PER_DEGREE}")
     
     def configure_tolerances(self, rotation_tolerance=None, distance_tolerance=None):
         """Configure tolerance values for rotation and distance"""
@@ -67,33 +82,86 @@ class RobotController:
         print(f"Move timeout: {self.max_move_time:.1f} seconds")
         print("=" * 30)
         
-    def wait_for_stationary(self, timeout=3.0):
-        """Wait for robot to be stationary before starting"""
-        print("Waiting for robot to be stationary...")
-        start_time = time.time()
+    def test_esp32_connection(self):
+        """Test connection to ESP32 and display status"""
+        print("\n🔍 Testing ESP32 Connection...")
+        print("=" * 40)
         
-        while time.time() - start_time < timeout:
-            _, gyro, imu_time = get_latest_imu()
-            if imu_time > 0:
-                # Check if angular velocity is low (robot is stationary)
-                if abs(gyro['z']) < 5.0:  # less than 5 degrees/second
-                    print("Robot is stationary. Ready to start.")
-                    return True
-            time.sleep(0.1)
+        # Use the shared function from advanced.py
+        if is_encoder_data_available():
+            encoders, enc_time = get_latest_encoders()
+            current_time = time.time()
+            age = current_time - enc_time
+            print(f"📊 Latest encoder data:")
+            print(f"   m1={encoders['m1']}, m2={encoders['m2']}")
+            print(f"   m3={encoders['m3']}, m4={encoders['m4']}")
+            print(f"   Age: {age:.1f} seconds")
+            print("✅ Connection is good!")
+            return True
+        else:
+            print("❌ No encoder data available")
+            return False
+
+    def get_encoder_position(self):
+        """Get current encoder positions for left and right motors"""
+        encoders, _ = get_latest_encoders()
+        # For 2-motor system: m1=left, m2=right
+        left_enc = encoders.get('m1', 0)
+        right_enc = encoders.get('m2', 0)
+        return left_enc, right_enc
         
-        print("Warning: Robot may still be moving")
-        return False
-    
+    def reset_encoder_reference(self):
+        """Set current encoder position as reference point"""
+        self.start_left, self.start_right = self.get_encoder_position()
+        print(f"Encoder reference set: left={self.start_left}, right={self.start_right}")
+        
+    def get_relative_position(self):
+        """Get encoder position relative to reference point"""
+        current_left, current_right = self.get_encoder_position()
+        rel_left = current_left - self.start_left
+        rel_right = current_right - self.start_right
+        return rel_left, rel_right
+        
     def turn_to_angle(self, target_degrees):
-        """Turn the robot to a specific angle relative to start position using gyro rotation"""
+        """Turn the robot to a specific angle using encoder differential"""
         print(f"Turning to {target_degrees:+.1f} degrees...")
         
+        # Calculate target encoder difference for rotation (relative ticks)
+        turn_ticks = int(abs(target_degrees) * self.PULSES_PER_DEGREE)
+        if turn_ticks == 0:
+            print("No rotation requested.")
+            return True
+
+        direction = 1 if target_degrees > 0 else -1
+        left_target_pulses = direction * turn_ticks
+        right_target_pulses = -direction * turn_ticks
+
+        # Determine signed motor speeds so each side spins in the proper direction
+        left_speed = -self.turn_speed if left_target_pulses < 0 else self.turn_speed
+        right_speed = -self.turn_speed if right_target_pulses < 0 else self.turn_speed
+
+        print(f"Target pulses: left={left_target_pulses}, right={right_target_pulses}")
+        print(f"Turn speeds: left={left_speed}, right={right_speed}")
+        
+        # Set reference point for monitoring progress
+        self.reset_encoder_reference()
+        
+        # Send relative move command to the Pi controller
+        move_by_ticks(left_target_pulses, right_target_pulses, left_speed, right_speed)
+        
+        # Monitor progress
         start_time = time.time()
         last_progress_time = start_time
         
         while time.time() - start_time < self.max_turn_time:
-            # Get current rotation from gyro integration
-            current_rotation = get_rotation_degrees()
+            rel_left, rel_right = self.get_relative_position()
+            
+            # Calculate current rotation based on encoder difference
+            avg_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
+            current_rotation = avg_pulses / self.PULSES_PER_DEGREE
+            if target_degrees < 0:
+                current_rotation = -current_rotation
+                
             error = target_degrees - current_rotation
             
             # Check if we're close enough
@@ -102,107 +170,77 @@ class RobotController:
                 print(f"Turn complete! Current rotation: {current_rotation:+.1f}°")
                 return True
             
-            # Determine turn direction and speed
-            if error > 0:
-                # Need to turn left (positive rotation)
-                turn_left(self.turn_speed)
-                direction = "left"
-            else:
-                # Need to turn right (negative rotation)
-                turn_right(self.turn_speed)
-                direction = "right"
-            
             # Progress update every second
             if time.time() - last_progress_time >= 1.0:
-                print(f"Turning {direction}: target={target_degrees:+.1f}°, "
-                      f"current={current_rotation:+.1f}°, error={error:+.1f}°")
+                print(f"Turning: target={target_degrees:+.1f}°, current={current_rotation:+.1f}°, error={error:+.1f}°")
+                print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
                 last_progress_time = time.time()
             
-            time.sleep(0.05)  # 20Hz control loop
+            time.sleep(0.1)  # 10Hz monitoring
         
         stop_motors()
-        current_rotation = get_rotation_degrees()
-        print(f"Turn timeout! Current rotation: {current_rotation:+.1f}° (target was {target_degrees:+.1f}°)")
-        return False
-        print(f"Turn timeout! Final rotation: {current_rotation:+.1f}° (target was {target_degrees:+.1f}°)")
+        rel_left, rel_right = self.get_relative_position()
+        avg_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
+        final_rotation = avg_pulses / self.PULSES_PER_DEGREE
+        if target_degrees < 0:
+            final_rotation = -final_rotation
+        print(f"Turn timeout! Final rotation: {final_rotation:+.1f}° (target was {target_degrees:+.1f}°)")
         return False
     
     def move_distance(self, target_cm):
-        """Move the robot a specific distance in cm"""
+        """Move the robot a specific distance in cm using encoders"""
         if target_cm == 0:
             print("No movement requested.")
             return True
             
         print(f"Moving {target_cm:+.1f} cm...")
         
-        # Wait for fresh lidar data
-        if not is_lidar_data_fresh():
-            print("Waiting for lidar data...")
-            start_wait = time.time()
-            while not is_lidar_data_fresh() and time.time() - start_wait < 5.0:
-                time.sleep(0.1)
-            
-            if not is_lidar_data_fresh():
-                print("Warning: No fresh lidar data available")
-                return False
+        # Calculate target pulses
+        target_pulses = int(target_cm * self.PULSES_PER_CM)
         
-        # Record starting distance
-        start_distance_mm = get_current_distance()
-        target_distance_mm = start_distance_mm + (target_cm * 10)  # convert cm to mm
+        print(f"Target pulses: {target_pulses} ({target_cm:.1f} cm)")
         
-        print(f"Start distance: {start_distance_mm} mm, Target: {target_distance_mm} mm")
+        # Set reference point
+        self.reset_encoder_reference()
         
+        # Send move_ticks command using relative ticks
+        speed = self.move_speed if target_cm > 0 else -self.move_speed
+        move_by_ticks(target_pulses, target_pulses, speed, speed)
+        
+        # Monitor progress
         start_time = time.time()
         last_progress_time = start_time
         
+        direction = 1 if target_cm >= 0 else -1
+        target_distance = float(target_cm)
+
         while time.time() - start_time < self.max_move_time:
-            if not is_lidar_data_fresh(max_age_seconds=1.0):
-                print("Warning: Lidar data is stale")
-                break
+            rel_left, rel_right = self.get_relative_position()
             
-            current_distance_mm = get_current_distance()
-            distance_traveled_mm = current_distance_mm - start_distance_mm
-            distance_traveled_cm = distance_traveled_mm / 10.0
-            error_cm = target_cm - distance_traveled_cm
+            # Calculate distance traveled using absolute encoder deltas
+            avg_abs_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
+            distance_traveled = (avg_abs_pulses / self.PULSES_PER_CM) * direction
+            error_cm = target_distance - distance_traveled
             
             # Check if we're close enough
             if abs(error_cm) <= self.distance_tolerance:
                 stop_motors()
-                print(f"Movement complete! Traveled: {distance_traveled_cm:+.1f} cm")
+                print(f"Movement complete! Traveled: {distance_traveled:+.1f} cm")
                 return True
-            
-            # Determine movement direction
-            if target_cm > 0:
-                # Moving forward
-                if error_cm > 0:
-                    move_forward(self.move_speed)
-                    direction = "forward"
-                else:
-                    # Overshot, back up
-                    move_backward(self.move_speed)
-                    direction = "backward (correcting)"
-            else:
-                # Moving backward
-                if error_cm < 0:
-                    move_backward(self.move_speed)
-                    direction = "backward"
-                else:
-                    # Overshot, move forward
-                    move_forward(self.move_speed)
-                    direction = "forward (correcting)"
             
             # Progress update every second
             if time.time() - last_progress_time >= 1.0:
-                print(f"Moving {direction}: target={target_cm:+.1f}cm, "
-                      f"traveled={distance_traveled_cm:+.1f}cm, error={error_cm:+.1f}cm")
+                print(f"Moving: target={target_cm:+.1f}cm, traveled={distance_traveled:+.1f}cm, error={error_cm:+.1f}cm")
+                print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
                 last_progress_time = time.time()
             
-            time.sleep(0.05)  # 20Hz control loop
+            time.sleep(0.1)  # 10Hz monitoring
         
         stop_motors()
-        current_distance_mm = get_current_distance()
-        distance_traveled_cm = (current_distance_mm - start_distance_mm) / 10.0
-        print(f"Movement timeout! Traveled: {distance_traveled_cm:+.1f} cm (target was {target_cm:+.1f} cm)")
+        rel_left, rel_right = self.get_relative_position()
+        avg_abs_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
+        distance_traveled = (avg_abs_pulses / self.PULSES_PER_CM) * direction
+        print(f"Movement timeout! Traveled: {distance_traveled:+.1f} cm (target was {target_cm:+.1f} cm)")
         return False
     
     def execute_command(self, rotation_degrees, movement_cm):
@@ -212,12 +250,13 @@ class RobotController:
         print(f"Movement: {movement_cm:+.1f} cm")
         print("=" * 30)
         
-        # Wait for robot to be stationary
-        self.wait_for_stationary()
-        
-        # Reset rotation counter for gyro integration
-        reset_rotation()
-        time.sleep(0.5)  # Give time for reset to take effect
+        # Test ESP32 connection first
+        if not self.test_esp32_connection():
+            # If connection test fails, try waiting for data
+            print("\n⏳ Waiting for ESP32 data...")
+            if not wait_for_encoder_data():
+                print("❌ No encoder data available")
+                return False
         
         success = True
         
@@ -248,22 +287,23 @@ class RobotController:
         
         return success
 
-def interactive_mode():
+def interactive_mode(controller):
     """Interactive mode for continuous commands"""
-    controller = RobotController()
     
-    print("=== ROBOT MOVEMENT CONTROL ===")
-    print("Interactive Mode")
+    print("=== ENCODER-BASED ROBOT MOVEMENT CONTROL ===")
+    print("Pure encoder navigation system")
     print("Commands:")
     print("  rotation, movement  - Execute movement (e.g., '90, 100')")
     print("  config              - Show current configuration")
     print("  tolerance X, Y      - Set rotation tolerance (X°) and distance tolerance (Y cm)")
     print("  speed X, Y          - Set turn speed (X) and move speed (Y)")
     print("  timeout X, Y        - Set turn timeout (X sec) and move timeout (Y sec)")
+    print("  encoders            - Show current encoder values")
     print("Examples:")
     print("  90, 100             - Turn 90° left, move 100cm forward")
-    print("  tolerance 5, 3      - Set ±5° rotation tolerance, ±3cm distance tolerance")
-    print("  speed 30, 20        - Set turn speed 30, move speed 20")
+    print("  -45, -50            - Turn 45° right, move 50cm backward")
+    print("  tolerance 2, 1      - Set ±2° rotation tolerance, ±1cm distance tolerance")
+    print("  speed 40, 30        - Set turn speed 40, move speed 30")
     print("Type 'quit' or 'q' to exit")
     print()
     
@@ -280,6 +320,17 @@ def interactive_mode():
             
             if user_input.lower() == 'config':
                 controller.show_configuration()
+                continue
+            
+            if user_input.lower() == 'encoders':
+                encoders, enc_time = get_latest_encoders()
+                print(f"\n=== CURRENT ENCODER VALUES ===")
+                print(f"m1 (left): {encoders['m1']}")
+                print(f"m2 (right): {encoders['m2']}")
+                print(f"m3: {encoders['m3']}")
+                print(f"m4: {encoders['m4']}")
+                print(f"Timestamp: {enc_time}")
+                print("=" * 30)
                 continue
             
             if user_input.lower().startswith('tolerance '):
@@ -343,7 +394,7 @@ def interactive_mode():
         except Exception as e:
             print(f"Error: {e}")
 
-def command_line_mode():
+def command_line_mode(controller):
     """Command line mode for single commands"""
     if len(sys.argv) != 3:
         print("Usage: python move_control.py <rotation_degrees> <movement_cm>")
@@ -354,7 +405,6 @@ def command_line_mode():
         rotation = float(sys.argv[1])
         movement = float(sys.argv[2])
         
-        controller = RobotController()
         return controller.execute_command(rotation, movement)
         
     except ValueError:
@@ -365,19 +415,34 @@ def main():
     try:
         # Initialize robot control system
         print("Initializing robot control system...")
-        init_bot_control(verbose_telemetry=False)
+        init_bot_control(verbose_telemetry=False)  # Enable verbose to see what's happening
         
-        # Give time for telemetry to start
-        time.sleep(2)
+        # Give more time for telemetry to start and receive data
+        print("Waiting for ESP32 connection and telemetry data...")
+        time.sleep(5)  # Increased from 2 to 5 seconds
+        
+        # Test connection before proceeding
+        controller = RobotController()
+        print("\n" + "="*50)
+        print("🤖 ROBOT CONTROL SYSTEM")
+        print("="*50)
+        
+        if not controller.test_esp32_connection():
+            print("\n⚠️ ESP32 connection issues detected!")
+            print("Please check:")
+            print("1. ESP32 is powered on")
+            print("2. Connected to 'ESP32-FruitBot' WiFi")
+            print("3. ESP32 firmware uploaded correctly")
+            print("\nTrying to continue anyway...")
         
         # Check if command line arguments were provided
         if len(sys.argv) == 3:
             # Command line mode
-            success = command_line_mode()
+            success = command_line_mode(controller)
             sys.exit(0 if success else 1)
         else:
             # Interactive mode
-            interactive_mode()
+            interactive_mode(controller)
             
     except KeyboardInterrupt:
         print("\nShutdown requested by user")

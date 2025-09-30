@@ -1,22 +1,32 @@
 #pragma once
 
-// Configure WiFi credentials
+// WiFi Access Point Configuration
+#define USE_ACCESS_POINT true                          // Set to true for AP mode, false for station mode
+#define AP_SSID "ESP32-FruitBot"                      // Name of the WiFi hotspot ESP32 creates
+#define AP_PASS "fruitbot123"                         // Password for the hotspot (min 8 chars)
+
+// Station mode credentials (used when WIFI_MODE_AP is false)
 #define WIFI_SSID "Abbashotspot"
 #define WIFI_PASS "qwertyuiop"
 
-// PC hostname for direct communication
-#define PC_HOSTNAME "msi.local"
+// PC hostname for direct communication (only used in station mode)
+#define PC_HOSTNAME "MSI.local"
 
 // mDNS hostname (will be accessible as esp32-robot.local)
-#define MDNS_HOSTNAME "esp32-robot"
+#define MDNS_HOSTNAME "fruitbot"
 
-// Static IP Configuration (optional - comment out for DHCP)
-#define STATIC_IP_ENABLE false  // Disable static IP, use DHCP + mDNS instead
-#define STATIC_IP       IPAddress(10, 210, 244, 100)   // Fixed IP for ESP32 (matching your PC's network)
-#define GATEWAY_IP      IPAddress(10, 210, 244, 133)   // Router IP (from your ipconfig)
-#define SUBNET_MASK     IPAddress(255, 255, 255, 0)    // Subnet mask
-#define DNS_PRIMARY     IPAddress(8, 8, 8, 8)          // Google DNS
-#define DNS_SECONDARY   IPAddress(8, 8, 4, 4)          // Google DNS backup
+// Access Point IP Configuration
+#define AP_IP           IPAddress(192, 168, 4, 1)      // ESP32 IP in AP mode
+#define AP_GATEWAY      IPAddress(192, 168, 4, 1)      // Gateway (same as ESP32)
+#define AP_SUBNET       IPAddress(255, 255, 255, 0)    // Subnet mask
+
+// Static IP Configuration for Station Mode (when WIFI_MODE_AP is false)
+#define STATIC_IP_ENABLE false                         // Disable static IP, use DHCP in station mode
+#define STATIC_IP       IPAddress(192, 168, 1, 100)   // Fixed IP for ESP32
+#define GATEWAY_IP      IPAddress(192, 168, 1, 1)     // Router IP
+#define SUBNET_MASK     IPAddress(255, 255, 255, 0)   // Subnet mask
+#define DNS_PRIMARY     IPAddress(8, 8, 8, 8)         // Google DNS
+#define DNS_SECONDARY   IPAddress(8, 8, 4, 4)         // Google DNS backup
 
 // Ports to match advanced.py
 #define CTRL_PORT 9000

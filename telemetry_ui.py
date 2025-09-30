@@ -25,6 +25,8 @@ import os
 import csv
 import math
 import time
+import threading
+import subprocess
 import pygame as pg
 from path_planner import (
     build_auto_path,
@@ -35,7 +37,8 @@ from path_planner import (
 from advanced import (
     init_bot_control, cleanup,
     get_rotation_degrees, get_full_imu_data,
-    is_lidar_data_fresh, get_current_distance
+    is_lidar_data_fresh, get_current_distance,
+    get_latest_encoders
 )
 
 
@@ -43,6 +46,81 @@ ARENA_WIDTH_CM = 118.1
 ARENA_HEIGHT_CM = 114.3
 
 FRUIT_SIZE_CM = 2.0                             # square side matching Fruit UI
+
+# Encoder-based odometry constants
+PPR = 1500  # Pulses per rotation
+WHEEL_DIAMETER = 4.4  # cm
+WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # cm per rotation
+PULSES_PER_CM = PPR / WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
+PULSES_PER_DEGREE = 22.3  # pulses per degree of bot rotation
+
+
+class Odometry:
+    def __init__(self):
+        self.reset()
+        
+    def reset(self):
+        """Reset odometry to origin"""
+        self.x_cm = 0.0
+        self.y_cm = 0.0
+        self.heading_deg = 0.0
+        self.prev_left_enc = None
+        self.prev_right_enc = None
+        self.total_left_pulses = 0
+        self.total_right_pulses = 0
+        
+    def set_position(self, x_cm, y_cm, heading_deg):
+        """Set absolute position (useful for initialization)"""
+        self.x_cm = x_cm
+        self.y_cm = y_cm
+        self.heading_deg = heading_deg
+        
+    def update(self, left_enc, right_enc):
+        """Update odometry based on encoder readings"""
+        if self.prev_left_enc is None or self.prev_right_enc is None:
+            # First reading - just store
+            self.prev_left_enc = left_enc
+            self.prev_right_enc = right_enc
+            return
+            
+        # Calculate encoder deltas
+        delta_left = left_enc - self.prev_left_enc
+        delta_right = right_enc - self.prev_right_enc
+        
+        # Update totals
+        self.total_left_pulses += delta_left
+        self.total_right_pulses += delta_right
+        
+        # Convert to distances
+        left_dist_cm = delta_left / PULSES_PER_CM
+        right_dist_cm = delta_right / PULSES_PER_CM
+        
+        # Calculate movement
+        forward_cm = (left_dist_cm + right_dist_cm) / 2.0
+        delta_heading_deg = (right_dist_cm - left_dist_cm) / (2.0 * PULSES_PER_DEGREE)
+        
+        # Update heading
+        self.heading_deg += delta_heading_deg
+        self.heading_deg = self.heading_deg % 360.0
+        
+        # Update position (integrate forward movement in current heading)
+        heading_rad = math.radians(self.heading_deg)
+        self.x_cm += forward_cm * math.sin(heading_rad)
+        self.y_cm += forward_cm * math.cos(heading_rad)
+        
+        # Store current readings for next iteration
+        self.prev_left_enc = left_enc
+        self.prev_right_enc = right_enc
+        
+    def get_pose(self):
+        """Return current pose (x_cm, y_cm, heading_deg)"""
+        return self.x_cm, self.y_cm, self.heading_deg
+        
+    def get_total_distance(self):
+        """Return total distance traveled by each wheel"""
+        left_dist = self.total_left_pulses / PULSES_PER_CM
+        right_dist = self.total_right_pulses / PULSES_PER_CM
+        return left_dist, right_dist
 
 
 def load_image(path: str) -> pg.Surface:
@@ -120,6 +198,41 @@ def load_checkpoints(script_dir):
     return pts
 
 
+def execute_path_segments(segments, status_callback=None):
+    """Execute path segments using the encoder-based move_control system"""
+    try:
+        if status_callback:
+            status_callback("running")
+        
+        # Import the RobotController from move_control
+        import sys
+        sys.path.append(os.path.dirname(__file__))
+        from move_control import RobotController
+        
+        controller = RobotController()
+        
+        for i, (turn_deg, dist_cm) in enumerate(segments):
+            if status_callback:
+                status_callback(f"running_segment_{i}")
+            
+            print(f"Executing segment {i+1}/{len(segments)}: turn {turn_deg}°, move {dist_cm}cm")
+            
+            if not controller.execute_command(turn_deg, dist_cm):
+                if status_callback:
+                    status_callback("error")
+                return False
+        
+        if status_callback:
+            status_callback("completed")
+        return True
+        
+    except Exception as e:
+        print(f"Path execution error: {e}")
+        if status_callback:
+            status_callback("error")
+        return False
+
+
 def draw_text(surface, text, pos, font, color=(240, 240, 240)):
     img = font.render(text, True, color)
     surface.blit(img, pos)
@@ -158,6 +271,12 @@ def main():
     # Telemetry init
     init_bot_control(verbose_telemetry=False)
 
+    # Initialize odometry system
+    odometry = Odometry()
+    if checkpoints:
+        # Start odometry at first checkpoint
+        odometry.set_position(checkpoints[0][0], checkpoints[0][1], 0.0)
+
     # Phase tracking
     auto_track = True
     seg_idx = 0
@@ -167,6 +286,11 @@ def main():
     move_start_lidar_mm = None
     move_target_cm = 0.0
     seg_heading = None
+    
+    # Path following state
+    path_following = False
+    path_thread = None
+    execution_status = "stopped"  # "stopped", "running", "paused", "completed", "error"
 
     # Live pose (in cm); initialize at first checkpoint if available
     live_x_cm = checkpoints[0][0] if checkpoints else 0.0
@@ -205,8 +329,10 @@ def main():
                     # Reset live pose to first checkpoint
                     if checkpoints:
                         live_x_cm, live_y_cm = checkpoints[0]
+                        odometry.set_position(checkpoints[0][0], checkpoints[0][1], 0.0)
                     else:
                         live_x_cm, live_y_cm = 0.0, 0.0
+                        odometry.reset()
                     live_heading_deg = 0.0
                 elif e.key == pg.K_a:
                     auto_track = not auto_track
@@ -216,12 +342,54 @@ def main():
                 elif e.key == pg.K_RIGHTBRACKET and not auto_track:
                     seg_idx = min(max(0, len(segments) - 1), seg_idx + 1)
                     phase = "idle"
+                elif e.key == pg.K_s:
+                    # Start/stop path following
+                    if not path_following and segments:
+                        print("Starting path execution...")
+                        execution_status = "starting"
+                        path_following = True
+                        
+                        def status_update(status):
+                            nonlocal execution_status
+                            execution_status = status
+                            
+                        def path_runner():
+                            nonlocal path_following, execution_status
+                            try:
+                                execute_path_segments(segments, status_update)
+                            finally:
+                                path_following = False
+                                if execution_status not in ["completed", "error"]:
+                                    execution_status = "stopped"
+                        
+                        path_thread = threading.Thread(target=path_runner, daemon=True)
+                        path_thread.start()
+                    elif path_following:
+                        print("Stopping path execution...")
+                        path_following = False
+                        execution_status = "stopped"
+                elif e.key == pg.K_o:
+                    # Reset odometry to current position or first checkpoint
+                    if checkpoints:
+                        odometry.set_position(checkpoints[0][0], checkpoints[0][1], 0.0)
+                        print(f"Odometry reset to first checkpoint: {checkpoints[0]}")
+                    else:
+                        odometry.reset()
+                        print("Odometry reset to origin")
 
         # Telemetry snapshot
         imu = get_full_imu_data()
         rotation_deg = get_rotation_degrees()
         lidar_mm = get_current_distance()
         lidar_fresh = is_lidar_data_fresh(max_age_seconds=1.0)
+        
+        # Update odometry with latest encoder data
+        encoders, enc_timestamp = get_latest_encoders()
+        left_enc = encoders.get('m1', 0)
+        right_enc = encoders.get('m2', 0)
+        odometry.update(left_enc, right_enc)
+        odometry_x, odometry_y, odometry_heading = odometry.get_pose()
+        left_dist, right_dist = odometry.get_total_distance()
 
         # Update live heading from gyro-derived rotation (wrap to [0,360))
         live_heading_deg = (rotation_deg % 360.0 + 360.0) % 360.0
@@ -299,7 +467,7 @@ def main():
                 y = p0[1] + (p1[1] - p0[1]) * ratio
                 # Persist live pose in cm
                 live_x_cm, live_y_cm = x, y
-                # Draw robot marker
+                # Draw robot marker (lidar-based estimate)
                 rx_img, ry_img = cm_to_image_xy(x, y, px_per_cm_x, px_per_cm_y)
                 rx, ry = image_to_screen((rx_img, ry_img), scale, offset)
                 pg.draw.circle(screen, (255, 80, 80), (int(rx), int(ry)), 6)
@@ -319,6 +487,17 @@ def main():
             vx = math.sin(rad) * 20
             vy = -math.cos(rad) * 20
             pg.draw.line(screen, (255, 80, 80), (rx, ry), (rx + vx, ry + vy), 3)
+        
+        # Draw odometry-based robot position (encoder-based estimate)
+        odo_rx_img, odo_ry_img = cm_to_image_xy(odometry_x, odometry_y, px_per_cm_x, px_per_cm_y)
+        odo_rx, odo_ry = image_to_screen((odo_rx_img, odo_ry_img), scale, offset)
+        pg.draw.circle(screen, (80, 255, 80), (int(odo_rx), int(odo_ry)), 8)  # Slightly larger, green circle
+        pg.draw.circle(screen, (40, 40, 40), (int(odo_rx), int(odo_ry)), 8, 2)  # Dark border
+        # Draw odometry orientation arrow
+        odo_rad = math.radians(odometry_heading)
+        odo_vx = math.sin(odo_rad) * 25
+        odo_vy = -math.cos(odo_rad) * 25
+        pg.draw.line(screen, (80, 255, 80), (odo_rx, odo_ry), (odo_rx + odo_vx, odo_ry + odo_vy), 4)
 
         # Draw fruits overlay
         sq_w = FRUIT_SIZE_CM * px_per_cm_x * scale
@@ -345,6 +524,19 @@ def main():
         draw_text(screen, "Telemetry UI", (hud_x, y), font_big)
         y += 28
         draw_text(screen, f"Segments: {len(segments)}  Index: {seg_idx}  Phase: {phase}", (hud_x, y), font)
+        y += 22
+        
+        # Path execution status
+        status_color = (240, 240, 240)
+        if execution_status == "running" or execution_status.startswith("running_segment"):
+            status_color = (100, 255, 100)
+        elif execution_status == "error":
+            status_color = (255, 100, 100)
+        elif execution_status == "completed":
+            status_color = (100, 255, 255)
+        
+        status_text = execution_status.replace("running_segment_", "Running seg ")
+        draw_text(screen, f"Path Status: {status_text}", (hud_x, y), font, status_color)
         y += 22
         # IMU
         draw_text(screen, "IMU:", (hud_x, y), font_big)
@@ -375,10 +567,24 @@ def main():
         draw_text(screen, f"x={live_x_cm:.1f} cm  y={live_y_cm:.1f} cm  heading={live_heading_deg:.1f}°", (hud_x, y), font)
         y += 24
 
-        # Encoders (placeholder)
+        # Encoders
         draw_text(screen, "Encoders:", (hud_x, y), font_big)
         y += 22
-        draw_text(screen, "(not connected)", (hud_x, y), font)
+        draw_text(screen, f"Left (m1): {left_enc}  Right (m2): {right_enc}", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"m3: {encoders.get('m3', 0)}  m4: {encoders.get('m4', 0)}", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Timestamp: {enc_timestamp}", (hud_x, y), font)
+        y += 24
+        
+        # Odometry
+        draw_text(screen, "Odometry:", (hud_x, y), font_big)
+        y += 22
+        draw_text(screen, f"Position: x={odometry_x:.1f} y={odometry_y:.1f} cm", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Heading: {odometry_heading:.1f}°", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Wheel distances: L={left_dist:.1f} R={right_dist:.1f} cm", (hud_x, y), font)
         y += 24
 
         # Controls
@@ -386,10 +592,22 @@ def main():
         y += 22
         draw_text(screen, "R: reload plan   A: auto track on/off   [/]: manual seg", (hud_x, y), font)
         y += 18
+        draw_text(screen, "S: start/stop path execution", (hud_x, y), font)
+        y += 18
+        draw_text(screen, "O: reset odometry", (hud_x, y), font)
+        y += 18
         draw_text(screen, "Esc/Q: quit", (hud_x, y), font)
 
-        # Fruit Legend
+        # Robot Legend
         y += 14
+        draw_text(screen, "Robot Indicators:", (hud_x, y), font_big)
+        y += 22
+        draw_text(screen, "Red circle: Lidar-based estimate", (hud_x, y), font, (255, 80, 80))
+        y += 18
+        draw_text(screen, "Green circle: Encoder odometry", (hud_x, y), font, (80, 255, 80))
+        y += 18
+
+        # Fruit Legend
         draw_text(screen, "Fruits:", (hud_x, y), font_big)
         y += 22
         draw_text(screen, f"Red targets: {len(reds)}", (hud_x, y), font)

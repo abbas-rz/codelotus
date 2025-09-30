@@ -10,15 +10,15 @@ from pynput import keyboard
 # ----------------------
 # Network Configuration  
 # ----------------------
-RPI_IP = 'esp32-robot.local'   # <-- ESP32 mDNS hostname (try this first)
+RPI_IP = '192.168.4.1'      # <-- ESP32 Access Point IP (primary)
 RPI_CTRL_PORT = 9000
 LOCAL_TELEM_PORT = 9001
 
-# Fallback IPs to try if mDNS fails
+# Fallback IPs to try if primary fails
 FALLBACK_IPS = [
-    'esp32-robot.local',
-    '10.210.244.100',    # Static IP if configured
-    '192.168.1.100',     # Other common static IP
+    'fruitbot.local',        # mDNS hostname (if still working)
+    'esp32-robot.local',     # alternative mDNS
+    '192.168.1.100',         # old static IP (if switched back to station mode)
 ]
 
 # ----------------------
@@ -60,6 +60,8 @@ calibration_loaded = False
 
 ctrl_sock = None
 telem_sock = None
+telem_thread = None
+telemetry_running = False
 verbose = True
 
 gear_idx = 0
@@ -154,16 +156,29 @@ def send_motor4(m1, m2=None, m3=None, m4=None):
     ctrl_sock.sendto(json.dumps(msg).encode(), (RPI_IP, RPI_CTRL_PORT))
 
 def move_by_ticks(left_ticks, right_ticks, left_speed, right_speed):
-    """Move until encoders reach absolute tick targets at given speeds."""
+    """Move by relative encoder ticks at the requested signed speeds."""
     global seq
     if ctrl_sock is None:
         initialize_sockets()
+
+    left_speed_cmd = int(clamp(left_speed, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT))
+    right_speed_cmd = int(clamp(right_speed, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT))
+    left_ticks_cmd = int(left_ticks)
+    right_ticks_cmd = int(right_ticks)
+
     msg = {
         'type': 'move_ticks',
-        'left_ticks': int(left_ticks),
-        'right_ticks': int(right_ticks),
-        'left_speed': int(clamp(left_speed, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
-        'right_speed': int(clamp(right_speed, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+        'left_ticks': left_ticks_cmd,
+        'right_ticks': right_ticks_cmd,
+        'left_speed': left_speed_cmd,
+        'right_speed': right_speed_cmd,
+        # Additional fields for newer Pi control firmware
+        'target': [abs(left_ticks_cmd), abs(right_ticks_cmd)],
+        'speeds': [left_speed_cmd, right_speed_cmd],
+        'direction': [
+            0 if left_speed_cmd == 0 else (1 if left_speed_cmd > 0 else -1),
+            0 if right_speed_cmd == 0 else (1 if right_speed_cmd > 0 else -1),
+        ],
         'seq': seq,
         'ts': int(time.time()*1000)
     }
@@ -204,6 +219,20 @@ def get_latest_heading(): return latest_heading, last_imu_time
 def get_latest_encoders():
     """Return latest encoder counts dict and timestamp."""
     return latest_encoders, last_enc_time
+
+def is_encoder_data_available():
+    """Check if recent encoder data is available"""
+    current_time = time.time()
+    return last_enc_time > 0 and (current_time - last_enc_time) < 10.0
+
+def wait_for_encoder_data(timeout=10.0):
+    """Wait for encoder data to become available"""
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        if is_encoder_data_available():
+            return True
+        time.sleep(0.1)
+    return False
 
 def get_full_imu_data(): 
     """Get all IMU data including heading, magnetometer, and temperature"""
@@ -292,7 +321,7 @@ def integrate_gyro_rotation(gyro_z_dps, current_time):
 
 def telem_loop(verbose=True):
     global current_distance, last_lidar_time
-    global latest_accel, latest_gyro, latest_heading, latest_mag, latest_temp_c, last_imu_time
+    global latest_accel, latest_gyro, latest_heading, latest_mag, latest_temp_c, last_imu_time, last_enc_time
 
     if telem_sock is None:
         initialize_sockets()
@@ -304,7 +333,8 @@ def telem_loop(verbose=True):
             # Add timeout so we can see if we're waiting for packets
             telem_sock.settimeout(5.0)  # 5 second timeout
             data, addr = telem_sock.recvfrom(2048)
-            print(f"Received packet from {addr}: {len(data)} bytes")
+            if verbose:
+                print(f"Received packet from {addr}: {len(data)} bytes")
             j = json.loads(data.decode())
 
             # --- LIDAR ---
@@ -373,10 +403,17 @@ def telem_loop(verbose=True):
             time.sleep(0.1)
 
 def start_telemetry_thread(verbose=True):
+    global telem_thread, telemetry_running
+    
+    if telemetry_running and telem_thread and telem_thread.is_alive():
+        print("Telemetry thread already running - skipping initialization")
+        return telem_thread
+    
     print(f"Starting telemetry thread, listening on port {LOCAL_TELEM_PORT}")
     print(f"Will send commands to ESP32 at {RPI_IP}:{RPI_CTRL_PORT}")
     telem_thread = threading.Thread(target=telem_loop, args=(verbose,), daemon=True)
     telem_thread.start()
+    telemetry_running = True
     print("Telemetry thread started")
     return telem_thread
 
@@ -490,6 +527,12 @@ def manual_control_loop():
 # Init / Cleanup
 # ----------------------
 def init_bot_control(verbose_telemetry=True):
+    global telemetry_running
+    
+    if telemetry_running:
+        print("Bot control already initialized - reusing existing connection")
+        return True
+    
     initialize_sockets()
     start_telemetry_thread(verbose_telemetry)
     
