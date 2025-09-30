@@ -48,11 +48,11 @@ ARENA_HEIGHT_CM = 114.3
 FRUIT_SIZE_CM = 2.0                             # square side matching Fruit UI
 
 # Encoder-based odometry constants
-PPR = 1500  # Pulses per rotation
+PPR = 5632  # Pulses per rotation
 WHEEL_DIAMETER = 4.4  # cm
 WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # cm per rotation
 PULSES_PER_CM = PPR / WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-PULSES_PER_DEGREE = 22.3  # pulses per degree of bot rotation
+PULSES_PER_DEGREE = 44 # pulses per degree of bot rotation
 
 
 class Odometry:
@@ -176,7 +176,7 @@ def load_path(script_dir):
                 try:
                     turn = float(row.get("turn_deg", "0"))
                     dist = float(row.get("distance_cm", "0"))
-                    segs.append((turn, dist))
+                    segs.append((-1*turn, dist))
                 except Exception:
                     pass
     return segs
@@ -204,28 +204,54 @@ def execute_path_segments(segments, status_callback=None):
         if status_callback:
             status_callback("running")
         
-        # Import the RobotController from move_control
+        print(f"Starting path execution with {len(segments)} segments...")
+        
+        # Import and initialize the RobotController from move_control
         import sys
+        import os
         sys.path.append(os.path.dirname(__file__))
+        
+        # Import the RobotController directly
         from move_control import RobotController
         
+        # Create controller instance
+        print("Creating RobotController...")
         controller = RobotController()
+        
+        print("Starting segment execution...")
+        success = True
         
         for i, (turn_deg, dist_cm) in enumerate(segments):
             if status_callback:
                 status_callback(f"running_segment_{i}")
             
-            print(f"Executing segment {i+1}/{len(segments)}: turn {turn_deg}°, move {dist_cm}cm")
+            print(f"\n=== Executing segment {i+1}/{len(segments)} ===")
+            print(f"Turn: {turn_deg}°, Move: {dist_cm}cm")
             
-            if not controller.execute_command(turn_deg, dist_cm):
+            # Execute the command
+            segment_success = controller.execute_command(turn_deg, dist_cm)
+            
+            if not segment_success:
+                print(f"❌ Segment {i+1} failed!")
+                success = False
                 if status_callback:
                     status_callback("error")
                 return False
+            else:
+                print(f"✅ Segment {i+1} completed successfully")
         
+        if success:
+            print("\n🎉 All path segments completed successfully!")
+            if status_callback:
+                status_callback("completed")
+            return True
+        
+    except ImportError as e:
+        print(f"Import error: {e}")
+        print("Make sure move_control.py is in the same directory")
         if status_callback:
-            status_callback("completed")
-        return True
-        
+            status_callback("error")
+        return False
     except Exception as e:
         print(f"Path execution error: {e}")
         if status_callback:

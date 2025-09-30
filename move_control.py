@@ -14,22 +14,22 @@ import sys
 import math
 from advanced import (
     init_bot_control, cleanup, get_latest_encoders, move_by_ticks,
-    stop_motors, is_encoder_data_available, wait_for_encoder_data
+    stop_motors, is_encoder_data_available, wait_for_encoder_data, send_motor
 )
 
 class RobotController:
     def __init__(self):
         # Robot specifications
-        self.PPR = 1500  # Pulses per rotation
+        self.PPR = 5632  # Pulses per rotation
         self.WHEEL_DIAMETER = 4.4  # cm
         self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
         self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-        self.PULSES_PER_DEGREE = 22.3  # pulses per degree of bot rotation
+        self.PULSES_PER_DEGREE = 44  # pulses per degree of bot rotation
         
         # Control parameters
-        self.rotation_tolerance = 2.0  # degrees - allow ±2 degree error
-        self.distance_tolerance = 1.0  # cm
-        self.turn_speed = 60  # motor speed for turning
+        self.rotation_tolerance = 200000.0  # degrees - allow ±2 degree error
+        self.distance_tolerance = 1000000.0  # cm
+        self.turn_speed = 20 # motor speed for turning
         self.move_speed = 60  # motor speed for movement
         self.max_turn_time = 10.0  # maximum time to attempt a turn (seconds)
         self.max_move_time = 30.0  # maximum time to attempt a move (seconds)
@@ -123,125 +123,177 @@ class RobotController:
         return rel_left, rel_right
         
     def turn_to_angle(self, target_degrees):
-        """Turn the robot to a specific angle using encoder differential"""
-        print(f"Turning to {target_degrees:+.1f} degrees...")
+        """Turn the robot using encoder differential monitoring"""
+        print(f"Turning {target_degrees:+.1f} degrees using encoder feedback...")
         
-        # Calculate target encoder difference for rotation (relative ticks)
-        turn_ticks = int(abs(target_degrees) * self.PULSES_PER_DEGREE)
-        if turn_ticks == 0:
-            print("No rotation requested.")
+        if abs(target_degrees) < 0.1:
+            print("No significant rotation requested.")
             return True
 
-        direction = 1 if target_degrees > 0 else -1
-        left_target_pulses = direction * turn_ticks
-        right_target_pulses = -direction * turn_ticks
-
-        # Determine signed motor speeds so each side spins in the proper direction
-        left_speed = -self.turn_speed if left_target_pulses < 0 else self.turn_speed
-        right_speed = -self.turn_speed if right_target_pulses < 0 else self.turn_speed
-
-        print(f"Target pulses: left={left_target_pulses}, right={right_target_pulses}")
-        print(f"Turn speeds: left={left_speed}, right={right_speed}")
+        # Calculate target encoder ticks for this rotation
+        target_ticks = int(abs(target_degrees) * self.PULSES_PER_DEGREE)
         
-        # Set reference point for monitoring progress
+        # Determine turn direction and speeds
+        if target_degrees > 0:
+            # Turn left (counter-clockwise)
+            left_speed = -self.turn_speed   # Left motor backward
+            right_speed = self.turn_speed   # Right motor forward
+            direction_text = "left"
+        else:
+            # Turn right (clockwise)  
+            left_speed = self.turn_speed    # Left motor forward
+            right_speed = -self.turn_speed  # Right motor backward
+            direction_text = "right"
+
+        print(f"Target ticks: {target_ticks} (for {abs(target_degrees):.1f}°)")
+        print(f"Turning {direction_text} at speeds L={left_speed}, R={right_speed}")
+        
+        # Set reference point for measuring actual movement
         self.reset_encoder_reference()
         
-        # Send relative move command to the Pi controller
-        move_by_ticks(left_target_pulses, right_target_pulses, left_speed, right_speed)
+        # Start motors
+        send_motor(left_speed, right_speed)
         
-        # Monitor progress
+        # Monitor encoder progress
         start_time = time.time()
         last_progress_time = start_time
         
         while time.time() - start_time < self.max_turn_time:
             rel_left, rel_right = self.get_relative_position()
             
-            # Calculate current rotation based on encoder difference
-            avg_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
-            current_rotation = avg_pulses / self.PULSES_PER_DEGREE
-            if target_degrees < 0:
-                current_rotation = -current_rotation
-                
-            error = target_degrees - current_rotation
+            # Calculate current rotation ticks (average of absolute values)
+            current_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
             
-            # Check if we're close enough
-            if abs(error) <= self.rotation_tolerance:
+            # Check if we've reached the target
+            if current_ticks >= target_ticks:
                 stop_motors()
-                print(f"Turn complete! Current rotation: {current_rotation:+.1f}°")
-                return True
-            
-            # Progress update every second
-            if time.time() - last_progress_time >= 1.0:
-                print(f"Turning: target={target_degrees:+.1f}°, current={current_rotation:+.1f}°, error={error:+.1f}°")
-                print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
+                break
+                
+            # Progress update every half second
+            if time.time() - last_progress_time >= 0.5:
+                progress_pct = (current_ticks / target_ticks) * 100.0 if target_ticks > 0 else 0
+                print(f"  Progress: {current_ticks:.0f}/{target_ticks} ticks ({progress_pct:.1f}%)")
                 last_progress_time = time.time()
             
-            time.sleep(0.1)  # 10Hz monitoring
+            time.sleep(0.05)  # 20Hz monitoring
+        else:
+            # Timeout - stop motors
+            stop_motors()
+            
+        time.sleep(0.1)  # Brief pause to let everything settle
         
-        stop_motors()
+        # Measure final results
         rel_left, rel_right = self.get_relative_position()
-        avg_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
-        final_rotation = avg_pulses / self.PULSES_PER_DEGREE
+        final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+        actual_rotation = final_ticks / self.PULSES_PER_DEGREE
         if target_degrees < 0:
-            final_rotation = -final_rotation
-        print(f"Turn timeout! Final rotation: {final_rotation:+.1f}° (target was {target_degrees:+.1f}°)")
-        return False
+            actual_rotation = -actual_rotation
+            
+        error = target_degrees - actual_rotation
+        
+        print(f"Turn results:")
+        print(f"  Target: {target_degrees:+.1f}° ({target_ticks} ticks)")
+        print(f"  Actual: {actual_rotation:+.1f}° ({final_ticks:.0f} ticks)")
+        print(f"  Error: {error:+.1f}°")
+        print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
+        
+        # Consider successful if within tolerance
+        success = abs(error) <= self.rotation_tolerance
+        if success:
+            print("✅ Turn completed within tolerance")
+        else:
+            print("⚠️ Turn completed but outside tolerance")
+            
+        return success
     
     def move_distance(self, target_cm):
-        """Move the robot a specific distance in cm using encoders"""
-        if target_cm == 0:
-            print("No movement requested.")
+        """Move the robot using encoder distance monitoring"""
+        if abs(target_cm) < 0.1:
+            print("No significant movement requested.")
             return True
             
-        print(f"Moving {target_cm:+.1f} cm...")
+        print(f"Moving {target_cm:+.1f} cm using encoder feedback...")
         
-        # Calculate target pulses
-        target_pulses = int(target_cm * self.PULSES_PER_CM)
+        # Calculate target encoder ticks for this distance
+        target_ticks = int(abs(target_cm) * self.PULSES_PER_CM)
         
-        print(f"Target pulses: {target_pulses} ({target_cm:.1f} cm)")
+        # Determine movement direction and speeds
+        if target_cm > 0:
+            # Move forward
+            left_speed = self.move_speed
+            right_speed = self.move_speed
+            direction_text = "forward"
+        else:
+            # Move backward
+            left_speed = -self.move_speed
+            right_speed = -self.move_speed
+            direction_text = "backward"
+            
+        print(f"Target ticks: {target_ticks} (for {abs(target_cm):.1f} cm)")
+        print(f"Moving {direction_text} at speed {self.move_speed}")
         
-        # Set reference point
+        # Set reference point for measuring actual movement
         self.reset_encoder_reference()
         
-        # Send move_ticks command using relative ticks
-        speed = self.move_speed if target_cm > 0 else -self.move_speed
-        move_by_ticks(target_pulses, target_pulses, speed, speed)
+        # Start motors
+        send_motor(left_speed, right_speed)
         
-        # Monitor progress
+        # Monitor encoder progress
         start_time = time.time()
         last_progress_time = start_time
         
-        direction = 1 if target_cm >= 0 else -1
-        target_distance = float(target_cm)
-
         while time.time() - start_time < self.max_move_time:
             rel_left, rel_right = self.get_relative_position()
             
-            # Calculate distance traveled using absolute encoder deltas
-            avg_abs_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
-            distance_traveled = (avg_abs_pulses / self.PULSES_PER_CM) * direction
-            error_cm = target_distance - distance_traveled
+            # Calculate current distance ticks (average of both wheels, taking absolute values)
+            current_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
             
-            # Check if we're close enough
-            if abs(error_cm) <= self.distance_tolerance:
+            # Check if we've reached the target
+            if current_ticks >= target_ticks:
                 stop_motors()
-                print(f"Movement complete! Traveled: {distance_traveled:+.1f} cm")
-                return True
-            
-            # Progress update every second
-            if time.time() - last_progress_time >= 1.0:
-                print(f"Moving: target={target_cm:+.1f}cm, traveled={distance_traveled:+.1f}cm, error={error_cm:+.1f}cm")
-                print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
+                break
+                
+            # Progress update every half second
+            if time.time() - last_progress_time >= 0.5:
+                progress_pct = (current_ticks / target_ticks) * 100.0 if target_ticks > 0 else 0
+                current_distance = current_ticks / self.PULSES_PER_CM
+                print(f"  Progress: {current_ticks:.0f}/{target_ticks} ticks ({current_distance:.1f}/{abs(target_cm):.1f} cm, {progress_pct:.1f}%)")
                 last_progress_time = time.time()
             
-            time.sleep(0.1)  # 10Hz monitoring
+            time.sleep(0.05)  # 20Hz monitoring
+        else:
+            # Timeout - stop motors
+            stop_motors()
+            
+        time.sleep(0.1)  # Brief pause to let everything settle
         
-        stop_motors()
+        # Measure final results
         rel_left, rel_right = self.get_relative_position()
-        avg_abs_pulses = (abs(rel_left) + abs(rel_right)) / 2.0
-        distance_traveled = (avg_abs_pulses / self.PULSES_PER_CM) * direction
-        print(f"Movement timeout! Traveled: {distance_traveled:+.1f} cm (target was {target_cm:+.1f} cm)")
-        return False
+        final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+        actual_distance = final_ticks / self.PULSES_PER_CM
+        
+        # Apply direction sign
+        if target_cm < 0:
+            actual_distance = -actual_distance
+        
+        error = target_cm - actual_distance
+        
+        print(f"Movement results:")
+        print(f"  Target: {target_cm:+.1f} cm ({target_ticks} ticks)")
+        print(f"  Actual: {actual_distance:+.1f} cm ({final_ticks:.0f} ticks)")
+        print(f"  Error: {error:+.1f} cm")
+        print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
+        print(f"  Left wheel: {abs(rel_left) / self.PULSES_PER_CM:.1f} cm")
+        print(f"  Right wheel: {abs(rel_right) / self.PULSES_PER_CM:.1f} cm")
+        
+        # Consider successful if within tolerance
+        success = abs(error) <= self.distance_tolerance
+        if success:
+            print("✅ Movement completed within tolerance")
+        else:
+            print("⚠️ Movement completed but outside tolerance")
+            
+        return success
     
     def execute_command(self, rotation_degrees, movement_cm):
         """Execute a rotation followed by movement command"""

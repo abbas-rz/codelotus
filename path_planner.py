@@ -286,8 +286,8 @@ def write_path(script_dir, segs):
 def load_path_config(script_dir, defaults=None):
     if defaults is None:
         # Default: bottom-right-ish for both start and end
-        defaults = ((ARENA_WIDTH_CM - 10.0, ARENA_HEIGHT_CM - 10.0),
-                    (ARENA_WIDTH_CM - 10.0, ARENA_HEIGHT_CM - 10.0))
+        defaults = ((ARENA_WIDTH_CM - 6.0, ARENA_HEIGHT_CM - 14.0),
+                    (ARENA_WIDTH_CM - 6.0, ARENA_HEIGHT_CM - 14.0))
     cfg_path = os.path.join(script_dir, "path_config.json")
     if not os.path.exists(cfg_path):
         return defaults
