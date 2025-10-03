@@ -24,8 +24,10 @@ FALLBACK_IPS = [
 # ----------------------
 # Drive config (tuneable)
 # ----------------------
-MOTOR_MAX_LEFT = 120
-MOTOR_MAX_RIGHT = 120
+# Motor factors: maintain consistent left/right ratio at all speeds
+MOTOR_FACTOR_LEFT = 0.97  # Left motor factor (adjusted for 2° undershoot)
+MOTOR_FACTOR_RIGHT = 1.0   # Right motor factor (reference)
+MOTOR_MAX_SPEED = 100      # Maximum speed for calculations
 GEAR_SCALES = [0.33, 0.66, 1.00]
 CRAWL_SCALE = 0.25
 FWD_GAIN = 1.0
@@ -117,19 +119,34 @@ def send_motor(left, right):
             print("Failed to send motor command to any IP")
 
 def stop_motors(): send_motor(0, 0)
-def move_forward(speed): send_motor(clamp(speed, 0, MOTOR_MAX_LEFT),
-                                    clamp(speed, 0, MOTOR_MAX_RIGHT))
-def move_backward(speed): send_motor(-clamp(speed, 0, MOTOR_MAX_LEFT),
-                                     -clamp(speed, 0, MOTOR_MAX_RIGHT))
+def move_forward(speed): 
+    left_speed = int(speed * MOTOR_FACTOR_LEFT)
+    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
+    send_motor(clamp(left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED),
+               clamp(right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+def move_backward(speed): 
+    left_speed = int(speed * MOTOR_FACTOR_LEFT)
+    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
+    send_motor(clamp(-left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED),
+               clamp(-right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
 def turn_right(speed=None):
-    if speed is None: speed = min(MOTOR_MAX_LEFT, MOTOR_MAX_RIGHT) // 3
-    send_motor(clamp(speed, 0, MOTOR_MAX_LEFT), -clamp(speed, 0, MOTOR_MAX_RIGHT))
+    if speed is None: speed = MOTOR_MAX_SPEED // 3
+    left_speed = int(speed * MOTOR_FACTOR_LEFT)
+    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
+    send_motor(clamp(left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED), 
+               clamp(-right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
 def turn_left(speed=None):
-    if speed is None: speed = min(MOTOR_MAX_LEFT, MOTOR_MAX_RIGHT) // 3
-    send_motor(-clamp(speed, 0, MOTOR_MAX_LEFT), clamp(speed, 0, MOTOR_MAX_RIGHT))
+    if speed is None: speed = MOTOR_MAX_SPEED // 3
+    left_speed = int(speed * MOTOR_FACTOR_LEFT)
+    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
+    send_motor(clamp(-left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED), 
+               clamp(right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
 def send_motor_differential(left, right):
-    send_motor(clamp(left, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT),
-               clamp(right, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT))
+    # Apply motor factors to maintain consistent ratios
+    left_speed = int(left * MOTOR_FACTOR_LEFT)
+    right_speed = int(right * MOTOR_FACTOR_RIGHT)
+    send_motor(clamp(left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED),
+               clamp(right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
 
 # Extended motor control: 4 independent motors (TB6612 x2)
 def send_motor4(m1, m2=None, m3=None, m4=None):
@@ -139,17 +156,17 @@ def send_motor4(m1, m2=None, m3=None, m4=None):
         initialize_sockets()
     if isinstance(m1, dict):
         speeds = {
-            'm1': int(clamp(m1.get('m1', 0), -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
-            'm2': int(clamp(m1.get('m2', 0), -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
-            'm3': int(clamp(m1.get('m3', 0), -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
-            'm4': int(clamp(m1.get('m4', 0), -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+            'm1': int(clamp(m1.get('m1', 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm2': int(clamp(m1.get('m2', 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm3': int(clamp(m1.get('m3', 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm4': int(clamp(m1.get('m4', 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
         }
     else:
         speeds = {
-            'm1': int(clamp(m1 or 0, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
-            'm2': int(clamp(m2 or 0, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
-            'm3': int(clamp(m3 or 0, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT)),
-            'm4': int(clamp(m4 or 0, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT)),
+            'm1': int(clamp((m1 or 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm2': int(clamp((m2 or 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm3': int(clamp((m3 or 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm4': int(clamp((m4 or 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
         }
     msg = {'type': 'motor4', **speeds, 'seq': seq, 'ts': int(time.time()*1000)}
     seq += 1
@@ -161,8 +178,8 @@ def move_by_ticks(left_ticks, right_ticks, left_speed, right_speed):
     if ctrl_sock is None:
         initialize_sockets()
 
-    left_speed_cmd = int(clamp(left_speed, -MOTOR_MAX_LEFT, MOTOR_MAX_LEFT))
-    right_speed_cmd = int(clamp(right_speed, -MOTOR_MAX_RIGHT, MOTOR_MAX_RIGHT))
+    left_speed_cmd = int(clamp(left_speed * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+    right_speed_cmd = int(clamp(right_speed * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
     left_ticks_cmd = int(left_ticks)
     right_ticks_cmd = int(right_ticks)
 
@@ -448,7 +465,9 @@ def get_gear_scale(gear=None):
 # ----------------------
 def calculate_gear_speed(gear=None, crawl=False):
     if gear is None: gear = gear_idx
-    scale = ((MOTOR_MAX_LEFT + MOTOR_MAX_RIGHT) / 2) * get_gear_scale(gear)
+    # Use average of motor factors for base speed calculation
+    avg_factor = (MOTOR_FACTOR_LEFT + MOTOR_FACTOR_RIGHT) / 2
+    scale = MOTOR_MAX_SPEED * avg_factor * get_gear_scale(gear)
     if crawl and gear == 0: scale *= CRAWL_SCALE
     return int(scale)
 
@@ -512,7 +531,9 @@ def manual_control_loop():
     print(f"Starting in gear {gear_idx+1}/{len(GEAR_SCALES)}")
     while True:
         left, right = 0, 0
-        scale = ((MOTOR_MAX_LEFT + MOTOR_MAX_RIGHT) / 2) * GEAR_SCALES[gear_idx]
+        # Use average of motor factors for base speed calculation
+        avg_factor = (MOTOR_FACTOR_LEFT + MOTOR_FACTOR_RIGHT) / 2
+        scale = MOTOR_MAX_SPEED * avg_factor * GEAR_SCALES[gear_idx]
         if gear_idx == 0 and 'SHIFT' in key_state: scale *= CRAWL_SCALE
         fwd_step = int(scale * FWD_GAIN)
         turn_step = int(scale * TURN_GAIN)
@@ -540,7 +561,7 @@ def init_bot_control(verbose_telemetry=True):
     load_gyro_calibration()
     
     print("Bot control system initialized")
-    print(f"Motor limits: LEFT={MOTOR_MAX_LEFT}, RIGHT={MOTOR_MAX_RIGHT}")
+    print(f"Motor factors: LEFT={MOTOR_FACTOR_LEFT}, RIGHT={MOTOR_FACTOR_RIGHT}, MAX_SPEED={MOTOR_MAX_SPEED}")
     return True
 
 def cleanup():

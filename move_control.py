@@ -24,15 +24,16 @@ class RobotController:
         self.WHEEL_DIAMETER = 4.4  # cm
         self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
         self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-        self.PULSES_PER_DEGREE = 44  # pulses per degree of bot rotation
+        self.PULSES_PER_DEGREE = 45  # pulses per degree of bot rotation
         
         # Control parameters
-        self.rotation_tolerance = 200000.0  # degrees - allow ±2 degree error
-        self.distance_tolerance = 1000000.0  # cm
-        self.turn_speed = 20 # motor speed for turning
+        self.rotation_tolerance = 2.0  # degrees - allow ±2 degree error
+        self.distance_tolerance = 4.0  # cm - allow ±1 cm error
+        self.turn_speed = 15 # motor speed for turning (slower = more precise)
         self.move_speed = 60  # motor speed for movement
         self.max_turn_time = 10.0  # maximum time to attempt a turn (seconds)
         self.max_move_time = 30.0  # maximum time to attempt a move (seconds)
+        self.enable_error_correction = True  # automatically correct turn errors
         
         print(f"Robot Encoder Specs:")
         print(f"  PPR: {self.PPR}")
@@ -50,6 +51,28 @@ class RobotController:
         if distance_tolerance is not None:
             self.distance_tolerance = max(0.1, float(distance_tolerance))
             print(f"Distance tolerance set to ±{self.distance_tolerance:.1f} cm")
+    
+    def configure_turn_precision(self, pulses_per_degree=None, turn_speed=None):
+        """Configure turn precision parameters"""
+        if pulses_per_degree is not None:
+            self.PULSES_PER_DEGREE = max(1, float(pulses_per_degree))
+            print(f"PULSES_PER_DEGREE set to {self.PULSES_PER_DEGREE}")
+        
+        if turn_speed is not None:
+            self.turn_speed = max(5, min(50, int(turn_speed)))
+            print(f"Turn speed set to {self.turn_speed}")
+    
+    def configure_error_correction(self, enable=None):
+        """Configure error correction settings"""
+        if enable is not None:
+            self.enable_error_correction = bool(enable)
+            status = "enabled" if self.enable_error_correction else "disabled"
+            print(f"Error correction {status}")
+    
+    def set_rotation_tolerance(self, tolerance_degrees):
+        """Set rotation tolerance for turn accuracy"""
+        self.rotation_tolerance = max(0.1, float(tolerance_degrees))
+        print(f"Rotation tolerance set to ±{self.rotation_tolerance:.1f} degrees")
     
     def configure_speeds(self, turn_speed=None, move_speed=None):
         """Configure speed values for turning and movement"""
@@ -135,15 +158,15 @@ class RobotController:
         
         # Determine turn direction and speeds
         if target_degrees > 0:
-            # Turn left (counter-clockwise)
-            left_speed = -self.turn_speed   # Left motor backward
-            right_speed = self.turn_speed   # Right motor forward
-            direction_text = "left"
-        else:
-            # Turn right (clockwise)  
+            # Turn right (clockwise) - positive angles = right turns
             left_speed = self.turn_speed    # Left motor forward
             right_speed = -self.turn_speed  # Right motor backward
             direction_text = "right"
+        else:
+            # Turn left (counter-clockwise) - negative angles = left turns
+            left_speed = -self.turn_speed   # Left motor backward
+            right_speed = self.turn_speed   # Right motor forward
+            direction_text = "left"
 
         print(f"Target ticks: {target_ticks} (for {abs(target_degrees):.1f}°)")
         print(f"Turning {direction_text} at speeds L={left_speed}, R={right_speed}")
@@ -161,8 +184,12 @@ class RobotController:
         while time.time() - start_time < self.max_turn_time:
             rel_left, rel_right = self.get_relative_position()
             
-            # Calculate current rotation ticks (average of absolute values)
-            current_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+            # Calculate current rotation ticks using weighted average
+            from advanced import MOTOR_FACTOR_LEFT, MOTOR_FACTOR_RIGHT
+            left_weight = MOTOR_FACTOR_LEFT
+            right_weight = MOTOR_FACTOR_RIGHT
+            total_weight = left_weight + right_weight
+            current_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
             
             # Check if we've reached the target
             if current_ticks >= target_ticks:
@@ -184,7 +211,16 @@ class RobotController:
         
         # Measure final results
         rel_left, rel_right = self.get_relative_position()
-        final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+        
+        # Use weighted average based on motor factors for more accurate rotation measurement
+        # This accounts for different motor speeds (MOTOR_FACTOR_LEFT = 0.97)
+        from advanced import MOTOR_FACTOR_LEFT, MOTOR_FACTOR_RIGHT
+        left_weight = MOTOR_FACTOR_LEFT
+        right_weight = MOTOR_FACTOR_RIGHT
+        total_weight = left_weight + right_weight
+        
+        # Weighted average of encoder movement
+        final_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
         actual_rotation = final_ticks / self.PULSES_PER_DEGREE
         if target_degrees < 0:
             actual_rotation = -actual_rotation
@@ -193,9 +229,12 @@ class RobotController:
         
         print(f"Turn results:")
         print(f"  Target: {target_degrees:+.1f}° ({target_ticks} ticks)")
-        print(f"  Actual: {actual_rotation:+.1f}° ({final_ticks:.0f} ticks)")
+        print(f"  Actual: {actual_rotation:+.1f}° ({final_ticks:.1f} ticks)")
         print(f"  Error: {error:+.1f}°")
         print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
+        print(f"  Motor factors: left={left_weight:.2f}, right={right_weight:.2f}")
+        print(f"  Tolerance: ±{self.rotation_tolerance:.1f}°")
+        print(f"  Error check: |{error:.1f}| <= {self.rotation_tolerance:.1f} = {abs(error) <= self.rotation_tolerance}")
         
         # Consider successful if within tolerance
         success = abs(error) <= self.rotation_tolerance
@@ -204,7 +243,125 @@ class RobotController:
         else:
             print("⚠️ Turn completed but outside tolerance")
             
+            if self.enable_error_correction:
+                print(f"Attempting error correction for {abs(error):.1f}° error...")
+                
+                # Attempt error correction
+                correction_success = self.correct_turn_error(error)
+                if correction_success:
+                    print("✅ Error correction successful")
+                    success = True
+                else:
+                    print("❌ Error correction failed")
+            else:
+                print("Error correction disabled")
+            
         return success
+    
+    def test_tolerance_logic(self, target_degrees, actual_degrees):
+        """Test tolerance logic with specific values"""
+        error = target_degrees - actual_degrees
+        success = abs(error) <= self.rotation_tolerance
+        
+        print(f"Tolerance Test:")
+        print(f"  Target: {target_degrees:+.1f}°")
+        print(f"  Actual: {actual_degrees:+.1f}°")
+        print(f"  Error: {error:+.1f}°")
+        print(f"  Tolerance: ±{self.rotation_tolerance:.1f}°")
+        print(f"  Check: |{error:.1f}| <= {self.rotation_tolerance:.1f} = {success}")
+        print(f"  Result: {'✅ Within tolerance' if success else '❌ Outside tolerance'}")
+        
+        return success
+    
+    def correct_turn_error(self, error_degrees, max_corrections=2):
+        """Attempt to correct turn error by making small adjustment turns"""
+        if abs(error_degrees) < 0.5:  # Don't correct very small errors
+            return True
+            
+        print(f"Correcting {error_degrees:+.1f}° error...")
+        
+        # Calculate correction angle (opposite of error)
+        correction_angle = -error_degrees
+        
+        # Limit correction to reasonable amount
+        max_correction = 10.0  # degrees
+        if abs(correction_angle) > max_correction:
+            correction_angle = max_correction if correction_angle > 0 else -max_correction
+            print(f"Limiting correction to {correction_angle:+.1f}°")
+        
+        # Use slower speed for corrections
+        original_speed = self.turn_speed
+        self.turn_speed = max(8, self.turn_speed // 2)  # Half speed for corrections
+        
+        try:
+            # Make correction turn
+            correction_ticks = int(abs(correction_angle) * self.PULSES_PER_DEGREE)
+            
+            # Determine correction direction
+            if correction_angle > 0:
+                left_speed = self.turn_speed
+                right_speed = -self.turn_speed
+                direction_text = "right"
+            else:
+                left_speed = -self.turn_speed
+                right_speed = self.turn_speed
+                direction_text = "left"
+            
+            print(f"Correction: {correction_angle:+.1f}° {direction_text} ({correction_ticks} ticks)")
+            
+            # Set new reference point for correction
+            self.reset_encoder_reference()
+            
+            # Start correction motors
+            send_motor(left_speed, right_speed)
+            
+            # Monitor correction progress
+            start_time = time.time()
+            max_correction_time = 3.0  # Shorter timeout for corrections
+            
+            while time.time() - start_time < max_correction_time:
+                rel_left, rel_right = self.get_relative_position()
+                
+                # Calculate current correction ticks using weighted average
+                from advanced import MOTOR_FACTOR_LEFT, MOTOR_FACTOR_RIGHT
+                left_weight = MOTOR_FACTOR_LEFT
+                right_weight = MOTOR_FACTOR_RIGHT
+                total_weight = left_weight + right_weight
+                current_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
+                
+                # Check if correction is complete
+                if current_ticks >= correction_ticks:
+                    stop_motors()
+                    break
+                    
+                time.sleep(0.05)  # 20Hz monitoring
+            else:
+                # Timeout - stop motors
+                stop_motors()
+            
+            time.sleep(0.2)  # Brief pause to let everything settle
+            
+            # Measure final correction results
+            rel_left, rel_right = self.get_relative_position()
+            final_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
+            actual_correction = final_ticks / self.PULSES_PER_DEGREE
+            if correction_angle < 0:
+                actual_correction = -actual_correction
+                
+            correction_error = correction_angle - actual_correction
+            
+            print(f"Correction results:")
+            print(f"  Target correction: {correction_angle:+.1f}°")
+            print(f"  Actual correction: {actual_correction:+.1f}°")
+            print(f"  Correction error: {correction_error:+.1f}°")
+            
+            # Check if correction was successful
+            correction_success = abs(correction_error) <= self.rotation_tolerance
+            return correction_success
+            
+        finally:
+            # Restore original turn speed
+            self.turn_speed = original_speed
     
     def move_distance(self, target_cm):
         """Move the robot using encoder distance monitoring"""
