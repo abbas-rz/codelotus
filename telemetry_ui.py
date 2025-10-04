@@ -47,12 +47,12 @@ ARENA_HEIGHT_CM = 114.3
 
 FRUIT_SIZE_CM = 2.0                             # square side matching Fruit UI
 
-# Encoder-based odometry constants
-PPR = 5632  # Pulses per rotation
+# Encoder-based odometry constants (matching move_control.py)
+PPR = 5632  # Pulses per rotation (same as move_control.py)
 WHEEL_DIAMETER = 4.4  # cm
 WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # cm per rotation
 PULSES_PER_CM = PPR / WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-PULSES_PER_DEGREE = 44 # pulses per degree of bot rotation
+PULSES_PER_DEGREE = 40 # pulses per degree of bot rotation (same as move_control.py)
 
 
 class Odometry:
@@ -217,6 +217,17 @@ def execute_path_segments(segments, status_callback=None):
         # Create controller instance
         print("Creating RobotController...")
         controller = RobotController()
+        
+        # Use same motor settings as move_control.py
+        turn_speed = 20  # Same as move_control.py default
+        move_speed = 60  # Same as move_control.py default
+        
+        print(f"Using move_control.py motor settings: turn_speed={turn_speed}, move_speed={move_speed}")
+        controller.configure_speeds(turn_speed=turn_speed, move_speed=move_speed)
+        
+        # Ensure we're using the same motor control method as move_control.py
+        # This prevents any advanced.py motor compensation from interfering
+        print("Using direct motor control (no advanced.py compensation)")
         
         print("Starting segment execution...")
         success = True
@@ -517,13 +528,37 @@ def main():
         # Draw odometry-based robot position (encoder-based estimate)
         odo_rx_img, odo_ry_img = cm_to_image_xy(odometry_x, odometry_y, px_per_cm_x, px_per_cm_y)
         odo_rx, odo_ry = image_to_screen((odo_rx_img, odo_ry_img), scale, offset)
-        pg.draw.circle(screen, (80, 255, 80), (int(odo_rx), int(odo_ry)), 8)  # Slightly larger, green circle
-        pg.draw.circle(screen, (40, 40, 40), (int(odo_rx), int(odo_ry)), 8, 2)  # Dark border
-        # Draw odometry orientation arrow
-        odo_rad = math.radians(odometry_heading)
-        odo_vx = math.sin(odo_rad) * 25
-        odo_vy = -math.cos(odo_rad) * 25
-        pg.draw.line(screen, (80, 255, 80), (odo_rx, odo_ry), (odo_rx + odo_vx, odo_ry + odo_vy), 4)
+        
+        # Check if robot position is valid (within arena bounds)
+        if 0 <= odo_rx <= ww and 0 <= odo_ry <= wh:
+            # Make robot position more visible
+            pg.draw.circle(screen, (0, 255, 0), (int(odo_rx), int(odo_ry)), 12)  # Larger green circle
+            pg.draw.circle(screen, (0, 0, 0), (int(odo_rx), int(odo_ry)), 12, 3)  # Black border
+            pg.draw.circle(screen, (255, 255, 255), (int(odo_rx), int(odo_ry)), 6)  # White center
+            
+            # Draw odometry orientation arrow (thicker and more visible)
+            odo_rad = math.radians(odometry_heading)
+            odo_vx = math.sin(odo_rad) * 30
+            odo_vy = -math.cos(odo_rad) * 30
+            pg.draw.line(screen, (0, 0, 0), (odo_rx, odo_ry), (odo_rx + odo_vx, odo_ry + odo_vy), 6)
+            pg.draw.line(screen, (255, 255, 255), (odo_rx, odo_ry), (odo_rx + odo_vx, odo_ry + odo_vy), 4)
+        else:
+            # Fallback: show robot at first checkpoint if odometry is invalid
+            if checkpoints:
+                fallback_x, fallback_y = checkpoints[0]
+                fallback_rx_img, fallback_ry_img = cm_to_image_xy(fallback_x, fallback_y, px_per_cm_x, px_per_cm_y)
+                fallback_rx, fallback_ry = image_to_screen((fallback_rx_img, fallback_ry_img), scale, offset)
+                
+                # Draw fallback robot position (red to indicate fallback)
+                pg.draw.circle(screen, (255, 0, 0), (int(fallback_rx), int(fallback_ry)), 12)
+                pg.draw.circle(screen, (0, 0, 0), (int(fallback_rx), int(fallback_ry)), 12, 3)
+                pg.draw.circle(screen, (255, 255, 255), (int(fallback_rx), int(fallback_ry)), 6)
+                
+                # Draw "?" to indicate fallback position
+                font_small = pg.font.SysFont(None, 16)
+                text = font_small.render("?", True, (0, 0, 0))
+                text_rect = text.get_rect(center=(int(fallback_rx), int(fallback_ry)))
+                screen.blit(text, text_rect)
 
         # Draw fruits overlay
         sq_w = FRUIT_SIZE_CM * px_per_cm_x * scale
@@ -611,6 +646,8 @@ def main():
         draw_text(screen, f"Heading: {odometry_heading:.1f}°", (hud_x, y), font)
         y += 18
         draw_text(screen, f"Wheel distances: L={left_dist:.1f} R={right_dist:.1f} cm", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Screen pos: ({int(odo_rx)}, {int(odo_ry)})", (hud_x, y), font)
         y += 24
 
         # Controls
