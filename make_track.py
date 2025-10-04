@@ -261,7 +261,7 @@ def main():
                                 prev_vy_cm = prev_dy * (1.0 / px_per_cm_y)
                                 prev_heading = heading_from_up_deg(prev_vx_cm, prev_vy_cm)
                                 curr_heading = heading_from_up_deg(vx_cm, vy_cm)
-                                # Flip sign so right turns are positive
+                                # Positive angles = clockwise (right) turns
                                 angle_deg = wrap_to_180(curr_heading - prev_heading)
                             
                             print(f"{angle_deg:.1f}, {distance_cm:.2f}")
@@ -354,8 +354,8 @@ def main():
                 prev_vy_cm = prev_dy * (1.0 / px_per_cm_y)
                 prev_heading = heading_from_up_deg(prev_vx_cm, prev_vy_cm)
                 curr_heading = heading_from_up_deg(vx_cm, vy_cm)
-                # Flip sign so right turns are positive
-                angle_deg = -wrap_to_180(curr_heading - prev_heading)
+                # Positive angles = clockwise (right) turns
+                angle_deg = wrap_to_180(curr_heading - prev_heading)
             
             mid = ((a[0] + b[0]) / 2.0, (a[1] + b[1]) / 2.0)
             draw_text(screen, f"{distance_cm:.1f}cm @ {angle_deg:.1f}°", (mid[0] + 8, mid[1] + 8), font_big)
@@ -385,8 +385,8 @@ def main():
                 prev_vy_cm = prev_dy * (1.0 / px_per_cm_y)
                 prev_heading = heading_from_up_deg(prev_vx_cm, prev_vy_cm)
                 curr_heading = heading_from_up_deg(vx_cm, vy_cm)
-                # Flip sign so right turns are positive
-                angle_deg = -wrap_to_180(curr_heading - prev_heading)
+                # Positive angles = clockwise (right) turns
+                angle_deg = wrap_to_180(curr_heading - prev_heading)
             else:
                 angle_deg = heading_from_up_deg(vx_cm, vy_cm)
             

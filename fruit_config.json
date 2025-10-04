@@ -1,97 +1,38 @@
 {
-  "fruits": [
-    [
-      "red",
-      0,
-      0
-    ],
-    [
-      "red",
-      0,
-      1
-    ],
-    [
-      "green",
-      0,
-      2
-    ],
-    [
-      "black",
-      0,
-      3
-    ],
-    [
-      "red",
-      0,
-      4
-    ],
-    [
-      "black",
-      0,
-      5
-    ],
-    [
-      "red",
-      1,
-      0
-    ],
-    [
-      "red",
-      1,
-      1
-    ],
-    [
-      "red",
-      1,
-      2
-    ],
-    [
-      "black",
-      1,
-      3
-    ],
-    [
-      "black",
-      1,
-      4
-    ],
-    [
-      "green",
-      1,
-      5
-    ],
-    [
-      "black",
-      2,
-      0
-    ],
-    [
-      "black",
-      2,
-      1
-    ],
-    [
-      "red",
-      2,
-      2
-    ],
-    [
-      "black",
-      2,
-      3
-    ],
-    [
-      "green",
-      2,
-      4
-    ],
-    [
-      "black",
-      2,
-      5
-    ]
-  ],
-  "harvest_order": [
-    5
-  ]
+    "Fruit_1_1": "Red",
+    "Fruit_1_2": "Red",
+    "Fruit_1_3": "None",
+    "Fruit_1_4": "None",
+    "Fruit_1_5": "None",
+    "Fruit_1_6": "None",
+    "Fruit_2_1": "None",
+    "Fruit_2_2": "None",
+    "Fruit_2_3": "None",
+    "Fruit_2_4": "None",
+    "Fruit_2_5": "None",
+    "Fruit_2_6": "None",
+    "Fruit_3_1": "None",
+    "Fruit_3_2": "None",
+    "Fruit_3_3": "None",
+    "Fruit_3_4": "None",
+    "Fruit_3_5": "None",
+    "Fruit_3_6": "None",
+    "Fruit_4_1": "None",
+    "Fruit_4_2": "None",
+    "Fruit_4_3": "Red",
+    "Fruit_4_4": "Red",
+    "Fruit_4_5": "None",
+    "Fruit_4_6": "None",
+    "Fruit_5_1": "None",
+    "Fruit_5_2": "None",
+    "Fruit_5_3": "None",
+    "Fruit_5_4": "None",
+    "Fruit_5_5": "None",
+    "Fruit_5_6": "None",
+    "Fruit_6_1": "None",
+    "Fruit_6_2": "None",
+    "Fruit_6_3": "None",
+    "Fruit_6_4": "None",
+    "Fruit_6_5": "None",
+    "Fruit_6_6": "None"
 }

@@ -40,6 +40,7 @@ from advanced import (
     is_lidar_data_fresh, get_current_distance,
     get_latest_encoders
 )
+from calibration_config import load_pulses_per_degree
 
 
 ARENA_WIDTH_CM = 118.1
@@ -52,7 +53,7 @@ PPR = 5632  # Pulses per rotation (same as move_control.py)
 WHEEL_DIAMETER = 4.4  # cm
 WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # cm per rotation
 PULSES_PER_CM = PPR / WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-PULSES_PER_DEGREE = 40 # pulses per degree of bot rotation (same as move_control.py)
+PULSES_PER_DEGREE = load_pulses_per_degree()
 
 
 class Odometry:
@@ -176,7 +177,7 @@ def load_path(script_dir):
                 try:
                     turn = float(row.get("turn_deg", "0"))
                     dist = float(row.get("distance_cm", "0"))
-                    segs.append((-1*turn, dist))
+                    segs.append((turn, dist))
                 except Exception:
                     pass
     return segs
@@ -217,6 +218,9 @@ def execute_path_segments(segments, status_callback=None):
         # Create controller instance
         print("Creating RobotController...")
         controller = RobotController()
+        current_ppd = load_pulses_per_degree()
+        controller.PULSES_PER_DEGREE = current_ppd
+        print(f"Calibrated pulses-per-degree: {current_ppd:.2f}")
         
         # Use same motor settings as move_control.py
         turn_speed = 20  # Same as move_control.py default
@@ -385,6 +389,7 @@ def main():
                         print("Starting path execution...")
                         execution_status = "starting"
                         path_following = True
+                        seg_heading = 0.0
                         
                         def status_update(status):
                             nonlocal execution_status

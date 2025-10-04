@@ -1,279 +1,173 @@
 #!/usr/bin/env python3
-"""
-Encoder-Only PPD (Pulses Per Degree) Measurement Tool
+"""Interactive encoder-only pulses-per-degree calibration.
 
-This tool measures PPD using only encoder data - no gyro required.
-It uses differential encoder counting to determine rotation.
+This tool repeatedly commands a 360° in-place spin using encoder ticks and
+asks you whether the robot overshot (>360°) or undershot (<360°). It narrows
+in on the correct pulses-per-degree value and stores the result in the shared
+calibration config so every script stays in sync.
 
 Usage:
     python measure_ppd_encoder_only.py
 """
+from __future__ import annotations
 
-import time
 import math
+import time
+from typing import Tuple
+
 from advanced import (
-    init_bot_control, cleanup, get_latest_encoders,
-    send_motor, stop_motors
+    init_bot_control,
+    cleanup,
+    get_latest_encoders,
+    move_by_ticks,
+    stop_motors,
+    wait_for_encoder_data,
 )
+from calibration_config import load_pulses_per_degree, save_pulses_per_degree
 
-def calculate_rotation_from_encoders(left_delta, right_delta):
-    """
-    Calculate rotation in degrees from encoder deltas for 2WD robot
-    
-    Args:
-        left_delta: Left encoder pulse change
-        right_delta: Right encoder pulse change  
-    
-    Returns:
-        Rotation in degrees
-    """
-    # For 2WD robots, we can use the existing PULSES_PER_DEGREE constant
-    # or calculate it directly from the encoder difference
-    
-    # Simple approach: use the average of both encoders as rotation indicator
-    # This works well for 2WD differential drive
-    avg_encoder_delta = (abs(left_delta) + abs(right_delta)) / 2
-    
-    # For 2WD, we can estimate rotation based on encoder difference
-    # This is a simplified approach that works well for most 2WD robots
-    encoder_diff = abs(left_delta - right_delta)
-    
-    # Use a reasonable estimate for 2WD rotation
-    # This will be calibrated by the measurement
-    estimated_rotation = encoder_diff / 2.0  # Rough estimate
-    
-    return estimated_rotation, avg_encoder_delta
+DEFAULT_SPEED = 35
+LOWER_BOUND = 5.0
+UPPER_BOUND = 200.0
+TOLERANCE_TICKS = 40
 
-def measure_ppd_encoder_only():
-    """Measure PPD using encoder-only method"""
-    
-    print("=== Encoder-Only PPD Measurement Tool ===")
-    print("This tool measures PPD using only encoder data - no gyro required")
-    print()
-    
-    # Initialize bot control
-    print("Initializing bot control...")
-    init_bot_control(verbose_telemetry=False)
-    time.sleep(3)
-    
-    # Wait for encoder data
-    print("Waiting for encoder data...")
-    start_time = time.time()
-    while time.time() - start_time < 10:
-        encoders, enc_time = get_latest_encoders()
-        if enc_time > 0:
-            print("✅ Encoder data received!")
-            break
+
+def wait_for_encoders(timeout: float = 10.0) -> None:
+    print("Waiting for live encoder data…", end=" ")
+    if wait_for_encoder_data(timeout):
+        print("✅ ready!")
+        return
+    raise RuntimeError("No encoder telemetry received. Check ESP32 link.")
+
+
+def get_encoder_snapshot() -> Tuple[int, int]:
+    encoders, _ = get_latest_encoders()
+    return int(encoders.get("m1", 0)), int(encoders.get("m2", 0))
+
+
+def wait_for_turn_completion(target_ticks: int, start_left: int, start_right: int,
+                             timeout: float = 20.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        cur_left, cur_right = get_encoder_snapshot()
+        left_delta = abs(cur_left - start_left)
+        right_delta = abs(cur_right - start_right)
+
+        if left_delta >= target_ticks - TOLERANCE_TICKS and right_delta >= target_ticks - TOLERANCE_TICKS:
+            return True
         time.sleep(0.1)
-    else:
-        print("❌ No encoder data received. Check ESP32 connection.")
-        return None
-    
-    print("\n=== Measurement Instructions ===")
-    print("1. Place robot on a flat surface")
-    print("2. Mark the robot's orientation (use a piece of tape)")
-    print("3. The robot will turn for a fixed time")
-    print("4. We'll calculate PPD from encoder differences")
-    print()
-    
-    input("Press Enter when ready to start measurement...")
-    
-    # Get initial encoder readings
-    initial_encoders, _ = get_latest_encoders()
-    initial_left = initial_encoders.get('m1', 0)
-    initial_right = initial_encoders.get('m2', 0)
-    
-    print(f"Initial encoders: Left={initial_left}, Right={initial_right}")
-    
-    print("\n🔄 Starting turn...")
-    print("Robot will turn LEFT for 3 seconds")
-    
-    # Start turning left
-    turn_speed = 40
-    send_motor(-turn_speed, turn_speed)  # Left turn
-    
-    # Turn for fixed time
-    turn_duration = 3.0  # seconds
-    start_time = time.time()
-    
-    while time.time() - start_time < turn_duration:
-        elapsed = time.time() - start_time
-        print(f"Turning... {elapsed:.1f}s", end='\r')
-        time.sleep(0.1)
-    
-    # Stop motors
+    return False
+
+
+def perform_full_turn(ppd: float, speed: int = DEFAULT_SPEED) -> Tuple[int, int, int, float]:
+    ticks = max(1, int(round(ppd * 360.0)))
+    start_left, start_right = get_encoder_snapshot()
+
+    print(f"\n🌀 Executing 360° turn using {ppd:.2f} pulses/° ({ticks} ticks)…")
+    move_by_ticks(-ticks, ticks, -speed, speed)
+
+    completed = wait_for_turn_completion(ticks, start_left, start_right)
     stop_motors()
-    time.sleep(0.5)
-    
-    # Get final encoder readings
-    final_encoders, _ = get_latest_encoders()
-    final_left = final_encoders.get('m1', 0)
-    final_right = final_encoders.get('m2', 0)
-    
-    # Calculate encoder deltas
-    left_delta = final_left - initial_left
-    right_delta = final_right - initial_right
-    
-    print(f"\n=== Results ===")
-    print(f"Initial encoders: Left={initial_left}, Right={initial_right}")
-    print(f"Final encoders:   Left={final_left}, Right={final_right}")
-    print(f"Encoder deltas:   Left={left_delta}, Right={right_delta}")
-    print(f"Turn duration:    {turn_duration}s")
-    
-    # Calculate rotation from encoders (2WD method)
-    estimated_rotation, avg_encoder_delta = calculate_rotation_from_encoders(left_delta, right_delta)
-    
-    print(f"\n=== Rotation Calculation ===")
-    print(f"Estimated rotation: {estimated_rotation:.1f}°")
-    print(f"Average encoder delta: {avg_encoder_delta:.1f} pulses")
-    
-    if avg_encoder_delta > 10:  # If we detected significant movement
-        # For 2WD, we'll use a simpler PPD calculation
-        # Assume the robot turned approximately 90 degrees in 3 seconds
-        assumed_rotation = 90.0  # degrees
-        ppd = avg_encoder_delta / assumed_rotation
-        
-        print(f"\n=== PPD Calculation ===")
-        print(f"Average encoder delta: {avg_encoder_delta:.1f} pulses")
-        print(f"Assumed rotation: {assumed_rotation}° (for 3-second turn)")
-        print(f"Pulses Per Degree: {ppd:.1f}")
-        
-        # Round to nearest integer
-        ppd_rounded = round(ppd)
-        print(f"Rounded PPD: {ppd_rounded}")
-        
-        print(f"\n=== Update telemetry_ui.py ===")
-        print(f"Change this line in telemetry_ui.py:")
-        print(f"PULSES_PER_DEGREE = {ppd_rounded}  # Measured value")
-        
-        return ppd_rounded
-    else:
-        print("❌ No significant movement detected. Check:")
-        print("- Motor connections")
-        print("- Encoder connections")
-        return None
+    time.sleep(0.4)
 
-def measure_ppd_manual_encoder():
-    """Manual PPD measurement using encoder-only method"""
-    
-    print("\n=== Manual Encoder-Only PPD Measurement ===")
-    print("You will control the robot turn manually")
-    print()
-    
-    # Initialize bot control
-    print("Initializing bot control...")
-    init_bot_control(verbose_telemetry=False)
-    time.sleep(3)
-    
-    # Wait for encoder data
-    print("Waiting for encoder data...")
-    start_time = time.time()
-    while time.time() - start_time < 10:
-        encoders, enc_time = get_latest_encoders()
-        if enc_time > 0:
-            print("✅ Encoder data received!")
-            break
-        time.sleep(0.1)
-    else:
-        print("❌ No encoder data received. Check ESP32 connection.")
-        return None
-    
-    print("\n=== Manual Measurement Instructions ===")
-    print("1. Place robot on a flat surface")
-    print("2. Mark the robot's orientation")
-    print("3. Press Enter to start recording")
-    print("4. Manually turn the robot 90 degrees")
-    print("5. Press Enter to stop recording")
-    print()
-    
-    input("Press Enter to start recording...")
-    
-    # Get initial encoder readings
-    initial_encoders, _ = get_latest_encoders()
-    initial_left = initial_encoders.get('m1', 0)
-    initial_right = initial_encoders.get('m2', 0)
-    
-    print(f"Initial encoders: Left={initial_left}, Right={initial_right}")
-    print("Now manually turn the robot 90 degrees...")
-    
-    input("Press Enter when you've turned the robot 90 degrees...")
-    
-    # Get final encoder readings
-    final_encoders, _ = get_latest_encoders()
-    final_left = final_encoders.get('m1', 0)
-    final_right = final_encoders.get('m2', 0)
-    
-    # Calculate encoder deltas
-    left_delta = final_left - initial_left
-    right_delta = final_right - initial_right
-    
-    print(f"\n=== Results ===")
-    print(f"Initial encoders: Left={initial_left}, Right={initial_right}")
-    print(f"Final encoders:   Left={final_left}, Right={final_right}")
-    print(f"Encoder deltas:   Left={left_delta}, Right={right_delta}")
-    
-    # Calculate rotation from encoders (2WD method)
-    estimated_rotation, avg_encoder_delta = calculate_rotation_from_encoders(left_delta, right_delta)
-    
-    print(f"\n=== Rotation Calculation ===")
-    print(f"Estimated rotation: {estimated_rotation:.1f}°")
-    print(f"Expected rotation: 90.0°")
-    print(f"Average encoder delta: {avg_encoder_delta:.1f} pulses")
-    
-    if avg_encoder_delta > 10:  # If we detected significant movement
-        # For manual 90-degree turn, use the actual rotation
-        assumed_rotation = 90.0  # degrees
-        ppd = avg_encoder_delta / assumed_rotation
-        
-        print(f"\n=== PPD Calculation ===")
-        print(f"Average encoder delta: {avg_encoder_delta:.1f} pulses")
-        print(f"Rotation: {assumed_rotation}° (manual 90° turn)")
-        print(f"Pulses Per Degree: {ppd:.1f}")
-        
-        # Round to nearest integer
-        ppd_rounded = round(ppd)
-        print(f"Rounded PPD: {ppd_rounded}")
-        
-        print(f"\n=== Update telemetry_ui.py ===")
-        print(f"Change this line in telemetry_ui.py:")
-        print(f"PULSES_PER_DEGREE = {ppd_rounded}  # Measured value")
-        
-        return ppd_rounded
-    else:
-        print("❌ No significant movement detected. Check encoder connections.")
-        return None
+    end_left, end_right = get_encoder_snapshot()
+    left_delta = end_left - start_left
+    right_delta = end_right - start_right
+    avg_ticks = (abs(left_delta) + abs(right_delta)) / 2.0
 
-def main():
+    if not completed:
+        print("⚠️  Turn timeout reached; encoders may not have hit target ticks.")
+
+    approx_rotation = avg_ticks / ppd if ppd else float('nan')
+    print(f"  Enc Δ: left={left_delta}, right={right_delta}, avg={avg_ticks:.1f} ticks")
+    if math.isfinite(approx_rotation):
+        print(f"  Approx rotation using current PPD: {approx_rotation:.1f}°")
+
+    return left_delta, right_delta, ticks, avg_ticks
+
+
+def prompt_adjustment() -> str:
+    print("Was that turn more than 360°, less than 360°, or just right?")
+    print("  [m] More (overshoot)    [l] Less (undershoot)    [p] Perfect")
+    print("  Or enter a numeric pulses-per-degree value to try directly.")
+    return input("Response: ").strip().lower()
+
+
+def refine_guess(current: float, response: str, bounds: Tuple[float, float]) -> Tuple[float, Tuple[float, float], bool]:
+    low, high = bounds
+    if response in {"p", "perfect", "good", "exact"}:
+        return current, (low, high), True
+    if response in {"m", "more", "over", "overshoot", "+"}:
+        high = current if current < high else high
+        if math.isfinite(high) and low < high:
+            next_guess = (low + high) / 2.0
+        else:
+            next_guess = current * 0.9
+        return max(LOWER_BOUND, next_guess), (low, high), False
+    if response in {"l", "less", "under", "undershoot", "-"}:
+        low = current if current > low else low
+        if math.isfinite(high) and low < high:
+            next_guess = (low + high) / 2.0
+        else:
+            next_guess = current * 1.1
+        return min(max(next_guess, LOWER_BOUND), UPPER_BOUND), (low, high), False
+
     try:
-        print("Encoder-Only PPD Measurement Tool")
-        print("Choose measurement method:")
-        print("1. Automatic turn (3 seconds)")
-        print("2. Manual turn (you control the robot)")
-        
-        choice = input("Enter choice (1 or 2): ").strip()
-        
-        if choice == "1":
-            ppd = measure_ppd_encoder_only()
-        elif choice == "2":
-            ppd = measure_ppd_manual_encoder()
-        else:
-            print("Invalid choice. Using automatic method.")
-            ppd = measure_ppd_encoder_only()
-        
-        if ppd:
-            print(f"\n🎉 Measurement complete!")
-            print(f"Update telemetry_ui.py with: PULSES_PER_DEGREE = {ppd}")
-        else:
-            print("❌ Measurement failed. Check robot connections and wheel base measurement.")
-            
-    except KeyboardInterrupt:
-        print("\nMeasurement cancelled by user.")
-    except Exception as e:
-        print(f"Error: {e}")
+        manual = float(response)
+        manual = min(max(manual, LOWER_BOUND), UPPER_BOUND)
+        return manual, (low, high), False
+    except ValueError:
+        print("Input not understood. Please reply with m / l / p or a number.")
+        return current, (low, high), False
+
+
+def interactive_calibration():
+    print("=== Encoder Pulses-Per-Degree Calibrator ===")
+    print("This wizard will spin the robot 360° and let you guide adjustments.")
+    print("Mark the robot's facing, clear the area, and be ready to observe.")
+
+    init_bot_control(verbose_telemetry=False)
+    wait_for_encoders()
+
+    current_guess = load_pulses_per_degree()
+    print(f"Starting from current config value: {current_guess:.2f} pulses/°")
+
+    bounds = (LOWER_BOUND, UPPER_BOUND)
+    iteration = 1
+    try:
+        while True:
+            print(f"\n=== Iteration {iteration} ===")
+            perform_full_turn(current_guess, DEFAULT_SPEED)
+            response = prompt_adjustment()
+            new_guess, bounds, done = refine_guess(current_guess, response, bounds)
+            if done:
+                print(f"Great! Final pulses-per-degree: {current_guess:.3f}")
+                save_pulses_per_degree(current_guess)
+                break
+            if abs(new_guess - current_guess) < 0.01:
+                current_guess = new_guess
+                print("Change too small; assume converged.")
+                save_pulses_per_degree(current_guess)
+                break
+            current_guess = new_guess
+            iteration += 1
     finally:
         stop_motors()
         cleanup()
-        print("Cleanup complete.")
+        print("Cleanup complete. Calibration config updated.")
+
+
+def main():
+    try:
+        interactive_calibration()
+    except KeyboardInterrupt:
+        print("\nCalibration cancelled by user.")
+        stop_motors()
+        cleanup()
+    except Exception as exc:
+        print(f"❌ Calibration failed: {exc}")
+        stop_motors()
+        cleanup()
+
 
 if __name__ == "__main__":
     main()

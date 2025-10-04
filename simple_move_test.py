@@ -11,6 +11,7 @@ from advanced import (
     init_bot_control, cleanup, get_latest_encoders, move_by_ticks,
     stop_motors, is_encoder_data_available, wait_for_encoder_data
 )
+from calibration_config import load_pulses_per_degree
 
 class RobotController:
     def __init__(self):
@@ -19,7 +20,7 @@ class RobotController:
         self.WHEEL_DIAMETER = 4.4  # cm
         self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
         self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-        self.PULSES_PER_DEGREE = 22.3  # pulses per degree of bot rotation
+        self.PULSES_PER_DEGREE = load_pulses_per_degree()
         
         # Control parameters
         self.rotation_tolerance = 2.0  # degrees - allow ±2 degree error

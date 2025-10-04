@@ -16,6 +16,7 @@ from advanced import (
     init_bot_control, cleanup, get_latest_encoders, move_by_ticks,
     stop_motors, is_encoder_data_available, wait_for_encoder_data, send_motor
 )
+from calibration_config import load_pulses_per_degree, save_pulses_per_degree
 
 class RobotController:
     def __init__(self):
@@ -24,10 +25,10 @@ class RobotController:
         self.WHEEL_DIAMETER = 4.4  # cm
         self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
         self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
-        self.PULSES_PER_DEGREE = 45  # pulses per degree of bot rotation
+        self.PULSES_PER_DEGREE = load_pulses_per_degree()
         
         # Control parameters
-        self.rotation_tolerance = 2.0  # degrees - allow ±2 degree error
+        self.rotation_tolerance = 15.0  # degrees - allow ±2 degree error
         self.distance_tolerance = 4.0  # cm - allow ±1 cm error
         self.turn_speed = 15 # motor speed for turning (slower = more precise)
         self.move_speed = 60  # motor speed for movement
@@ -56,6 +57,7 @@ class RobotController:
         """Configure turn precision parameters"""
         if pulses_per_degree is not None:
             self.PULSES_PER_DEGREE = max(1, float(pulses_per_degree))
+            save_pulses_per_degree(self.PULSES_PER_DEGREE)
             print(f"PULSES_PER_DEGREE set to {self.PULSES_PER_DEGREE}")
         
         if turn_speed is not None:

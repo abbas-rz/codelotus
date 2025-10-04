@@ -6,6 +6,7 @@ Can be imported by other modules or run standalone for manual control.
 """
 import socket, threading, json, time
 from pynput import keyboard
+from calibration_config import load_pulses_per_degree
 
 # ----------------------
 # Network Configuration  
@@ -25,13 +26,14 @@ FALLBACK_IPS = [
 # Drive config (tuneable)
 # ----------------------
 # Motor factors: maintain consistent left/right ratio at all speeds
-MOTOR_FACTOR_LEFT = 0.97  # Left motor factor (adjusted for 2° undershoot)
+MOTOR_FACTOR_LEFT = 1 # Left motor factor (adjusted for 2° undershoot)
 MOTOR_FACTOR_RIGHT = 1.0   # Right motor factor (reference)
 MOTOR_MAX_SPEED = 100      # Maximum speed for calculations
 GEAR_SCALES = [0.33, 0.66, 1.00]
 CRAWL_SCALE = 0.25
 FWD_GAIN = 1.0
 TURN_GAIN = 0.5
+PULSES_PER_DEGREE = load_pulses_per_degree()
 
 # ----------------------
 # Global State Variables
