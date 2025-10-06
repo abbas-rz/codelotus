@@ -21,16 +21,16 @@ from calibration_config import load_pulses_per_degree, save_pulses_per_degree
 class RobotController:
     def __init__(self):
         # Robot specifications
-        self.PPR = 5632  # Pulses per rotation
+        self.PPR = 5640  # Pulses per rotation
         self.WHEEL_DIAMETER = 4.4  # cm
         self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
         self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
         self.PULSES_PER_DEGREE = load_pulses_per_degree()
         
         # Control parameters
-        self.rotation_tolerance = 15.0  # degrees - allow ±2 degree error
+        self.rotation_tolerance = 5.0  # degrees - allow ±2 degree error
         self.distance_tolerance = 4.0  # cm - allow ±1 cm error
-        self.turn_speed = 15 # motor speed for turning (slower = more precise)
+        self.turn_speed = 30 # motor speed for turning (slower = more precise)
         self.move_speed = 60  # motor speed for movement
         self.max_turn_time = 10.0  # maximum time to attempt a turn (seconds)
         self.max_move_time = 30.0  # maximum time to attempt a move (seconds)
@@ -175,6 +175,9 @@ class RobotController:
         
         # Set reference point for measuring actual movement
         self.reset_encoder_reference()
+
+        # Pause briefly before initiating the turn to let the robot settle
+        time.sleep(1.0)
         
         # Start motors
         send_motor(left_speed, right_speed)

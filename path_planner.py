@@ -27,7 +27,7 @@ MIN_CLEARANCE_CM = 7.0
 OBSTACLE_RADIUS_CM = 3.0          # kept for reference if boundary-based clearance is later desired
 AVOID_MARGIN_CM = 8.0             # kept for tuning; currently not used in hard filter
 PENALTY_WEIGHT = 200.0            # retained for optional scoring, not used in hard filter
-CLEARANCE_CM = MIN_CLEARANCE_CM
+NO_GO_CLEARANCE_CM = 8.0
 
 # Grid-based routing parameters
 GRID_STEP_CM = 1.0  # grid resolution; finer yields better paths, higher compute
@@ -38,55 +38,192 @@ def _dist(a, b):
     return math.hypot(ax - bx, ay - by)
 
 
-def _segment_penalty(a, b, obstacles):
-    if not obstacles:
-        return 0.0
+def _make_point_obstacle(x, y, clearance):
+    return {
+        "type": "point",
+        "x": float(x),
+        "y": float(y),
+        "clearance": float(clearance),
+    }
+
+
+def _make_rect_obstacle(x1, y1, x2, y2, clearance):
+    xmin = min(x1, x2)
+    xmax = max(x1, x2)
+    ymin = min(y1, y2)
+    ymax = max(y1, y2)
+    return {
+        "type": "rect",
+        "xmin": float(xmin),
+        "xmax": float(xmax),
+        "ymin": float(ymin),
+        "ymax": float(ymax),
+        "clearance": float(clearance),
+    }
+
+
+def _distance_point_to_segment(px, py, a, b):
     (x1, y1), (x2, y2) = a, b
     dx = x2 - x1
     dy = y2 - y1
     denom = dx * dx + dy * dy
+    if denom == 0:
+        return math.hypot(px - x1, py - y1)
+    t = ((px - x1) * dx + (py - y1) * dy) / denom
+    t = max(0.0, min(1.0, t))
+    proj_x = x1 + t * dx
+    proj_y = y1 + t * dy
+    return math.hypot(px - proj_x, py - proj_y)
+
+
+def _point_inside_rect(px, py, rect):
+    return rect["xmin"] <= px <= rect["xmax"] and rect["ymin"] <= py <= rect["ymax"]
+
+
+def _distance_point_to_rect(px, py, rect):
+    if _point_inside_rect(px, py, rect):
+        return 0.0
+    dx = 0.0
+    if px < rect["xmin"]:
+        dx = rect["xmin"] - px
+    elif px > rect["xmax"]:
+        dx = px - rect["xmax"]
+    dy = 0.0
+    if py < rect["ymin"]:
+        dy = rect["ymin"] - py
+    elif py > rect["ymax"]:
+        dy = py - rect["ymax"]
+    return math.hypot(dx, dy)
+
+
+def _orientation(p, q, r):
+    val = (q[1] - p[1]) * (r[0] - q[0]) - (q[0] - p[0]) * (r[1] - q[1])
+    if abs(val) < 1e-9:
+        return 0
+    return 1 if val > 0 else 2
+
+
+def _on_segment(p, q, r):
+    return min(p[0], r[0]) - 1e-9 <= q[0] <= max(p[0], r[0]) + 1e-9 and \
+           min(p[1], r[1]) - 1e-9 <= q[1] <= max(p[1], r[1]) + 1e-9
+
+
+def _segments_intersect(p1, p2, q1, q2):
+    o1 = _orientation(p1, p2, q1)
+    o2 = _orientation(p1, p2, q2)
+    o3 = _orientation(q1, q2, p1)
+    o4 = _orientation(q1, q2, p2)
+
+    if o1 != o2 and o3 != o4:
+        return True
+    if o1 == 0 and _on_segment(p1, q1, p2):
+        return True
+    if o2 == 0 and _on_segment(p1, q2, p2):
+        return True
+    if o3 == 0 and _on_segment(q1, p1, q2):
+        return True
+    if o4 == 0 and _on_segment(q1, p2, q2):
+        return True
+    return False
+
+
+def _distance_segment_to_segment(a1, a2, b1, b2):
+    if _segments_intersect(a1, a2, b1, b2):
+        return 0.0
+    return min(
+        _distance_point_to_segment(a1[0], a1[1], b1, b2),
+        _distance_point_to_segment(a2[0], a2[1], b1, b2),
+        _distance_point_to_segment(b1[0], b1[1], a1, a2),
+        _distance_point_to_segment(b2[0], b2[1], a1, a2),
+    )
+
+
+def _segment_intersects_rect(a, b, rect):
+    if _point_inside_rect(a[0], a[1], rect) or _point_inside_rect(b[0], b[1], rect):
+        return True
+    corners = [
+        (rect["xmin"], rect["ymin"]),
+        (rect["xmax"], rect["ymin"]),
+        (rect["xmax"], rect["ymax"]),
+        (rect["xmin"], rect["ymax"]),
+    ]
+    edges = [
+        (corners[0], corners[1]),
+        (corners[1], corners[2]),
+        (corners[2], corners[3]),
+        (corners[3], corners[0]),
+    ]
+    for e1, e2 in edges:
+        if _segments_intersect(a, b, e1, e2):
+            return True
+    return False
+
+
+def _distance_segment_to_rect(a, b, rect):
+    if _segment_intersects_rect(a, b, rect):
+        return 0.0
+    corners = [
+        (rect["xmin"], rect["ymin"]),
+        (rect["xmax"], rect["ymin"]),
+        (rect["xmax"], rect["ymax"]),
+        (rect["xmin"], rect["ymax"]),
+    ]
+    edges = [
+        (corners[0], corners[1]),
+        (corners[1], corners[2]),
+        (corners[2], corners[3]),
+        (corners[3], corners[0]),
+    ]
+    dist = min(
+        _distance_point_to_rect(a[0], a[1], rect),
+        _distance_point_to_rect(b[0], b[1], rect),
+    )
+    for e1, e2 in edges:
+        dist = min(dist, _distance_segment_to_segment(a, b, e1, e2))
+    return dist
+
+
+def _segment_penalty(a, b, obstacles):
+    if not obstacles:
+        return 0.0
     penalty = 0.0
-    for (ox, oy) in obstacles:
-        if denom == 0:
-            dmin = _dist(a, (ox, oy))
+    for obs in obstacles:
+        if obs["type"] == "point":
+            dmin = _distance_point_to_segment(obs["x"], obs["y"], a, b)
         else:
-            t = ((ox - x1) * dx + (oy - y1) * dy) / denom
-            t = max(0.0, min(1.0, t))
-            px = x1 + t * dx
-            py = y1 + t * dy
-            dmin = math.hypot(px - ox, py - oy)
-        clearance = OBSTACLE_RADIUS_CM + AVOID_MARGIN_CM
+            dmin = _distance_segment_to_rect(a, b, obs)
+        clearance = obs.get("clearance", OBSTACLE_RADIUS_CM + AVOID_MARGIN_CM)
         if dmin < clearance:
             penalty += PENALTY_WEIGHT * (clearance - dmin)
     return penalty
 
 
 def _segment_min_clearance(a, b, obstacles):
-    """Return the minimum distance from segment AB to any obstacle center (in cm)."""
+    """Return the minimum distance from segment AB to any obstacle (in cm)."""
     if not obstacles:
-        return float('inf')
-    (x1, y1), (x2, y2) = a, b
-    dx = x2 - x1
-    dy = y2 - y1
-    denom = dx * dx + dy * dy
-    min_d = float('inf')
-    for (ox, oy) in obstacles:
-        if denom == 0:
-            dmin = _dist(a, (ox, oy))
+        return float("inf")
+    min_d = float("inf")
+    for obs in obstacles:
+        if obs["type"] == "point":
+            dmin = _distance_point_to_segment(obs["x"], obs["y"], a, b)
         else:
-            t = ((ox - x1) * dx + (oy - y1) * dy) / denom
-            t = max(0.0, min(1.0, t))
-            px = x1 + t * dx
-            py = y1 + t * dy
-            dmin = math.hypot(px - ox, py - oy)
+            dmin = _distance_segment_to_rect(a, b, obs)
         if dmin < min_d:
             min_d = dmin
     return min_d
 
 
-def _segment_is_clear(a, b, obstacles, clearance=CLEARANCE_CM):
-    """Return True if segment AB keeps at least 'clearance' distance from all obstacles."""
-    return _segment_min_clearance(a, b, obstacles) >= clearance
+def _segment_is_clear(a, b, obstacles):
+    """Return True if segment AB keeps the required clearance from all obstacles."""
+    for obs in obstacles:
+        clearance = obs.get("clearance", MIN_CLEARANCE_CM)
+        if obs["type"] == "point":
+            dmin = _distance_point_to_segment(obs["x"], obs["y"], a, b)
+        else:
+            dmin = _distance_segment_to_rect(a, b, obs)
+        if dmin < clearance:
+            return False
+    return True
 
 
 def _polyline_length(path):
@@ -102,20 +239,25 @@ def _build_occupancy(obstacles, step=GRID_STEP_CM):
     """Return occupancy grid and helpers for planning. True=blocked."""
     gw = int(math.ceil(ARENA_WIDTH_CM / step)) + 1
     gh = int(math.ceil(ARENA_HEIGHT_CM / step)) + 1
-    occ = [[False]*gw for _ in range(gh)]
-    # Mark blocked cells if within clearance of any obstacle
-    clr = CLEARANCE_CM
-    clr2 = clr * clr
+    occ = [[False] * gw for _ in range(gh)]
     for gy in range(gh):
         y = gy * step
         for gx in range(gw):
             x = gx * step
-            for (ox, oy) in obstacles:
-                dx = x - ox
-                dy = y - oy
-                if dx*dx + dy*dy <= clr2:
-                    occ[gy][gx] = True
-                    break
+            blocked = False
+            for obs in obstacles:
+                clear = obs.get("clearance", MIN_CLEARANCE_CM)
+                if obs["type"] == "point":
+                    dx = x - obs["x"]
+                    dy = y - obs["y"]
+                    if dx * dx + dy * dy <= clear * clear:
+                        blocked = True
+                        break
+                else:
+                    if _distance_point_to_rect(x, y, obs) <= clear:
+                        blocked = True
+                        break
+            occ[gy][gx] = blocked
     return occ, gw, gh, step
 
 
@@ -283,6 +425,44 @@ def write_path(script_dir, segs):
             w.writerow([f"{t:.2f}", f"{d:.2f}"])
 
 
+def load_no_go_zones(script_dir):
+    cfg = os.path.join(script_dir, "nogo_zones.json")
+    points = []
+    rectangles = []
+    clearance = NO_GO_CLEARANCE_CM
+    if not os.path.exists(cfg):
+        return points, rectangles, clearance
+    try:
+        with open(cfg, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        clearance = float(data.get("clearance_cm", clearance))
+        for entry in data.get("points_cm", []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                points.append((float(entry[0]), float(entry[1])))
+        for entry in data.get("rectangles_cm", []):
+            if isinstance(entry, (list, tuple)) and len(entry) >= 4:
+                x1, y1, x2, y2 = map(float, entry[:4])
+                rectangles.append((x1, y1, x2, y2))
+    except Exception:
+        # Malformed file; ignore and fall back to defaults
+        return [], [], NO_GO_CLEARANCE_CM
+    return points, rectangles, clearance
+
+
+def save_no_go_zones(script_dir, points, rectangles, clearance=NO_GO_CLEARANCE_CM):
+    cfg = os.path.join(script_dir, "nogo_zones.json")
+    data = {
+        "clearance_cm": float(clearance),
+        "points_cm": [[float(x), float(y)] for (x, y) in points],
+        "rectangles_cm": [[float(x1), float(y1), float(x2), float(y2)] for (x1, y1, x2, y2) in rectangles],
+    }
+    try:
+        with open(cfg, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as exc:
+        print(f"ERROR saving nogo_zones.json: {exc}")
+
+
 def load_path_config(script_dir, defaults=None):
     if defaults is None:
         # Default: bottom-right-ish for both start and end
@@ -322,7 +502,19 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None):
             if math.hypot(px - rx, py - ry) <= tol:
                 return False
         return True
-    obstacles = list(blacks) + [g for g in greens if not_near_red(g, reds)]
+    obstacles = []
+    for (bx, by) in blacks:
+        obstacles.append(_make_point_obstacle(bx, by, MIN_CLEARANCE_CM))
+    for gx, gy in greens:
+        if not_near_red((gx, gy), reds):
+            obstacles.append(_make_point_obstacle(gx, gy, MIN_CLEARANCE_CM))
+
+    nogo_points, nogo_rects, nogo_clearance = load_no_go_zones(script_dir)
+    nogo_clearance = max(nogo_clearance, NO_GO_CLEARANCE_CM)
+    for (nx, ny) in nogo_points:
+        obstacles.append(_make_point_obstacle(nx, ny, nogo_clearance))
+    for (x1, y1, x2, y2) in nogo_rects:
+        obstacles.append(_make_rect_obstacle(x1, y1, x2, y2, nogo_clearance))
 
     if not reds:
         return [], []
