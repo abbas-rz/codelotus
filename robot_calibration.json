@@ -1,4 +1,7 @@
 {
-    "pulses_per_degree": 43.4228515625,
-    "updated_at": "2025-10-06T12:55:40"
+    "motor_factor_left": 0.98,
+    "motor_factor_right": 1.0,
+    "pulses_per_cm": 434.55625,
+    "pulses_per_degree": 45.0,
+    "updated_at": "2025-10-08T19:09:36"
 }

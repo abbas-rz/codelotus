@@ -6,7 +6,11 @@ Can be imported by other modules or run standalone for manual control.
 """
 import socket, threading, json, time
 from pynput import keyboard
-from calibration_config import load_pulses_per_degree
+from calibration_config import (
+    load_pulses_per_degree,
+    load_pulses_per_cm,
+    load_motor_factors,
+)
 
 # ----------------------
 # Network Configuration  
@@ -26,14 +30,16 @@ FALLBACK_IPS = [
 # Drive config (tuneable)
 # ----------------------
 # Motor factors: maintain consistent left/right ratio at all speeds
-MOTOR_FACTOR_LEFT = 1 # Left motor factor (adjusted for 2° undershoot)
-MOTOR_FACTOR_RIGHT = 1.0   # Right motor factor (reference)
+_motor_factor_left, _motor_factor_right = load_motor_factors()
+MOTOR_FACTOR_LEFT = _motor_factor_left  # Exposed for read-only reference
+MOTOR_FACTOR_RIGHT = _motor_factor_right  # Exposed for read-only reference
 MOTOR_MAX_SPEED = 100      # Maximum speed for calculations
 GEAR_SCALES = [0.33, 0.66, 1.00]
 CRAWL_SCALE = 0.25
 FWD_GAIN = 1.0
 TURN_GAIN = 0.5
 PULSES_PER_DEGREE = load_pulses_per_degree()
+PULSES_PER_CM = load_pulses_per_cm()
 
 # ----------------------
 # Global State Variables
@@ -66,7 +72,7 @@ ctrl_sock = None
 telem_sock = None
 telem_thread = None
 telemetry_running = False
-verbose = True
+verbose = False
 
 gear_idx = 0
 key_state = set()
@@ -91,6 +97,23 @@ def initialize_sockets():
 def clamp(x, lo, hi):
     return max(lo, min(hi, x))
 
+
+def set_motor_factors(left: float, right: float) -> None:
+    """Update global motor factors used for all drive helpers."""
+    global _motor_factor_left, _motor_factor_right, MOTOR_FACTOR_LEFT, MOTOR_FACTOR_RIGHT
+    _motor_factor_left = left
+    _motor_factor_right = right
+    MOTOR_FACTOR_LEFT = left
+    MOTOR_FACTOR_RIGHT = right
+
+
+def _scale_left(speed: float) -> int:
+    return int(clamp(round(speed * _motor_factor_left), -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+
+
+def _scale_right(speed: float) -> int:
+    return int(clamp(round(speed * _motor_factor_right), -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+
 # ----------------------
 # Core Motor Control
 # ----------------------
@@ -99,7 +122,13 @@ def send_motor(left, right):
     if ctrl_sock is None:
         initialize_sockets()
     
-    msg = {'type':'motor','left':int(left),'right':int(right),
+    left_cmd = _scale_left(left)
+    right_cmd = _scale_right(right)
+
+    if verbose:
+        print(f"[send_motor] Input: L={left}, R={right} → Scaled: L={left_cmd}, R={right_cmd}")
+
+    msg = {'type':'motor','left':left_cmd,'right':right_cmd,
            'seq':seq, 'ts': int(time.time()*1000)}
     seq += 1
     
@@ -120,35 +149,30 @@ def send_motor(left, right):
         if verbose:
             print("Failed to send motor command to any IP")
 
-def stop_motors(): send_motor(0, 0)
-def move_forward(speed): 
-    left_speed = int(speed * MOTOR_FACTOR_LEFT)
-    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
-    send_motor(clamp(left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED),
-               clamp(right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
-def move_backward(speed): 
-    left_speed = int(speed * MOTOR_FACTOR_LEFT)
-    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
-    send_motor(clamp(-left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED),
-               clamp(-right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+def stop_motors():
+    send_motor(0, 0)
+
+
+def move_forward(speed):
+    speed = clamp(speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)
+    send_motor(speed, speed)
+
+
+def move_backward(speed):
+    speed = clamp(speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)
+    send_motor(-speed, -speed)
+
+
 def turn_right(speed=None):
     if speed is None: speed = MOTOR_MAX_SPEED // 3
-    left_speed = int(speed * MOTOR_FACTOR_LEFT)
-    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
-    send_motor(clamp(left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED), 
-               clamp(-right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+    speed = clamp(speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)
+    send_motor(speed, -speed)
 def turn_left(speed=None):
     if speed is None: speed = MOTOR_MAX_SPEED // 3
-    left_speed = int(speed * MOTOR_FACTOR_LEFT)
-    right_speed = int(speed * MOTOR_FACTOR_RIGHT)
-    send_motor(clamp(-left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED), 
-               clamp(right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+    speed = clamp(speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)
+    send_motor(-speed, speed)
 def send_motor_differential(left, right):
-    # Apply motor factors to maintain consistent ratios
-    left_speed = int(left * MOTOR_FACTOR_LEFT)
-    right_speed = int(right * MOTOR_FACTOR_RIGHT)
-    send_motor(clamp(left_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED),
-               clamp(right_speed, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+    send_motor(left, right)
 
 # Extended motor control: 4 independent motors (TB6612 x2)
 def send_motor4(m1, m2=None, m3=None, m4=None):
@@ -158,17 +182,17 @@ def send_motor4(m1, m2=None, m3=None, m4=None):
         initialize_sockets()
     if isinstance(m1, dict):
         speeds = {
-            'm1': int(clamp(m1.get('m1', 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
-            'm2': int(clamp(m1.get('m2', 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
-            'm3': int(clamp(m1.get('m3', 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
-            'm4': int(clamp(m1.get('m4', 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm1': _scale_left(m1.get('m1', 0)),
+            'm2': _scale_right(m1.get('m2', 0)),
+            'm3': _scale_left(m1.get('m3', 0)),
+            'm4': _scale_right(m1.get('m4', 0)),
         }
     else:
         speeds = {
-            'm1': int(clamp((m1 or 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
-            'm2': int(clamp((m2 or 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
-            'm3': int(clamp((m3 or 0) * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
-            'm4': int(clamp((m4 or 0) * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED)),
+            'm1': _scale_left(m1 or 0),
+            'm2': _scale_right(m2 or 0),
+            'm3': _scale_left(m3 or 0),
+            'm4': _scale_right(m4 or 0),
         }
     msg = {'type': 'motor4', **speeds, 'seq': seq, 'ts': int(time.time()*1000)}
     seq += 1
@@ -180,8 +204,8 @@ def move_by_ticks(left_ticks, right_ticks, left_speed, right_speed):
     if ctrl_sock is None:
         initialize_sockets()
 
-    left_speed_cmd = int(clamp(left_speed * MOTOR_FACTOR_LEFT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
-    right_speed_cmd = int(clamp(right_speed * MOTOR_FACTOR_RIGHT, -MOTOR_MAX_SPEED, MOTOR_MAX_SPEED))
+    left_speed_cmd = _scale_left(left_speed)
+    right_speed_cmd = _scale_right(right_speed)
     left_ticks_cmd = int(left_ticks)
     right_ticks_cmd = int(right_ticks)
 

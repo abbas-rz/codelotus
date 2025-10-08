@@ -56,8 +56,15 @@ def calibrate_turn():
                 # Calculate new PULSES_PER_DEGREE
                 current_ppd = robot.PULSES_PER_DEGREE
                 new_ppd = current_ppd * correction_factor
-                print(f"Current PULSES_PER_DEGREE: {current_ppd}")
-                print(f"Suggested PULSES_PER_DEGREE: {new_ppd:.1f}")
+                print(f"Current PULSES_PER_DEGREE: {current_ppd:.3f}")
+                print(f"Suggested PULSES_PER_DEGREE: {new_ppd:.3f}")
+
+                save_choice = input(
+                    "Save this value to the shared calibration config now? [y/N]: "
+                ).strip().lower()
+                if save_choice in ("y", "yes"):
+                    robot.configure_turn_precision(pulses_per_degree=new_ppd)
+                    print("Calibration config updated.")
             else:
                 print("Invalid angle entered")
         except ValueError:
@@ -67,8 +74,8 @@ def calibrate_turn():
         input()
     
     print("\n=== Calibration Complete ===")
-    print("Use the suggested PULSES_PER_DEGREE values to update move_control.py")
-    print("Average the correction factors for best results.")
+    print("Saved values are written to robot_calibration.json so all tools stay in sync.")
+    print("If you skipped saving, rerun and confirm with 'y' to persist the new value.")
     
     advanced.cleanup()
 

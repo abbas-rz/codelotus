@@ -40,7 +40,7 @@ from advanced import (
     is_lidar_data_fresh, get_current_distance,
     get_latest_encoders
 )
-from calibration_config import load_pulses_per_degree
+from calibration_config import load_pulses_per_degree, load_pulses_per_cm
 
 
 ARENA_WIDTH_CM = 118.1
@@ -52,8 +52,16 @@ FRUIT_SIZE_CM = 2.0                             # square side matching Fruit UI
 PPR = 5632  # Pulses per rotation (same as move_control.py)
 WHEEL_DIAMETER = 4.4  # cm
 WHEEL_CIRCUMFERENCE = math.pi * WHEEL_DIAMETER  # cm per rotation
-PULSES_PER_CM = PPR / WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
+DEFAULT_PULSES_PER_CM = PPR / WHEEL_CIRCUMFERENCE
+PULSES_PER_CM = load_pulses_per_cm(DEFAULT_PULSES_PER_CM)  # pulses per cm of wheel travel
 PULSES_PER_DEGREE = load_pulses_per_degree()
+
+# Wheelbase (distance between left and right wheels)
+# Derived from relationship: pulses_per_degree = (pulses_per_cm * wheelbase_cm * π) / 360
+# wheelbase_cm = (pulses_per_degree * 360) / (pulses_per_cm * π)
+WHEELBASE_CM = (PULSES_PER_DEGREE * 360.0) / (PULSES_PER_CM * math.pi)
+
+CALIBRATION_REFRESH_INTERVAL = 2.5  # seconds between config refreshes
 
 
 class Odometry:
@@ -96,18 +104,21 @@ class Odometry:
         left_dist_cm = delta_left / PULSES_PER_CM
         right_dist_cm = delta_right / PULSES_PER_CM
         
-        # Calculate movement
+        # Calculate movement using differential drive kinematics
         forward_cm = (left_dist_cm + right_dist_cm) / 2.0
-        delta_heading_deg = (right_dist_cm - left_dist_cm) / (2.0 * PULSES_PER_DEGREE)
+        # For differential drive: delta_heading = arc_length_difference / wheelbase
+        # When right wheel travels more, heading increases (counterclockwise)
+        delta_heading_deg = math.degrees((right_dist_cm - left_dist_cm) / WHEELBASE_CM)
         
         # Update heading
         self.heading_deg += delta_heading_deg
         self.heading_deg = self.heading_deg % 360.0
         
         # Update position (integrate forward movement in current heading)
+        # Convention: 0° = up (toward negative Y), origin at top-left, +Y downward
         heading_rad = math.radians(self.heading_deg)
-        self.x_cm += forward_cm * math.sin(heading_rad)
-        self.y_cm += forward_cm * math.cos(heading_rad)
+        self.x_cm += forward_cm * math.sin(heading_rad)  # +X to the right
+        self.y_cm -= forward_cm * math.cos(heading_rad)  # -Y upward (toward top)
         
         # Store current readings for next iteration
         self.prev_left_enc = left_enc
@@ -214,17 +225,29 @@ def execute_path_segments(segments, status_callback=None):
         
         # Import the RobotController directly
         from move_control import RobotController
+        from calibration_config import load_motor_factors
+        import advanced
+        
+        # Load and apply motor factors before creating controller
+        left_factor, right_factor = load_motor_factors()
+        advanced.set_motor_factors(left_factor, right_factor)
+        print(f"Applied motor factors: L={left_factor:.3f}, R={right_factor:.3f}")
         
         # Create controller instance
         print("Creating RobotController...")
         controller = RobotController()
         current_ppd = load_pulses_per_degree()
         controller.PULSES_PER_DEGREE = current_ppd
+        controller.session_pulses_per_degree = current_ppd
+        current_ppc = load_pulses_per_cm(controller.DEFAULT_PULSES_PER_CM)
+        controller.PULSES_PER_CM = current_ppc
+        controller.session_pulses_per_cm = current_ppc
         print(f"Calibrated pulses-per-degree: {current_ppd:.2f}")
+        print(f"Calibrated pulses-per-cm: {current_ppc:.2f}")
         
         # Use same motor settings as move_control.py
-        turn_speed = 20  # Same as move_control.py default
-        move_speed = 60  # Same as move_control.py default
+        turn_speed = 35  # Same as move_control.py default
+        move_speed = 45  # Same as move_control.py defaults
         
         print(f"Using move_control.py motor settings: turn_speed={turn_speed}, move_speed={move_speed}")
         controller.configure_speeds(turn_speed=turn_speed, move_speed=move_speed)
@@ -280,6 +303,7 @@ def draw_text(surface, text, pos, font, color=(240, 240, 240)):
 
 
 def main():
+    global PULSES_PER_CM, PULSES_PER_DEGREE
     pg.init()
     pg.display.set_caption("Telemetry UI")
 
@@ -340,6 +364,7 @@ def main():
 
     clock = pg.time.Clock()
     running = True
+    last_calibration_refresh = 0.0
     while running:
         ww, wh = screen.get_size()
         scale, offset = fit_scale_and_offset((ww, wh), (iw, ih))
@@ -420,6 +445,16 @@ def main():
                         print("Odometry reset to origin")
 
         # Telemetry snapshot
+        now_time = time.time()
+        if now_time - last_calibration_refresh >= CALIBRATION_REFRESH_INTERVAL:
+            last_calibration_refresh = now_time
+            refreshed_ppc = load_pulses_per_cm(DEFAULT_PULSES_PER_CM)
+            refreshed_ppd = load_pulses_per_degree()
+            if abs(refreshed_ppc - PULSES_PER_CM) > 1e-6:
+                PULSES_PER_CM = refreshed_ppc
+            if abs(refreshed_ppd - PULSES_PER_DEGREE) > 1e-6:
+                PULSES_PER_DEGREE = refreshed_ppd
+
         imu = get_full_imu_data()
         rotation_deg = get_rotation_degrees()
         lidar_mm = get_current_distance()
@@ -432,6 +467,9 @@ def main():
         odometry.update(left_enc, right_enc)
         odometry_x, odometry_y, odometry_heading = odometry.get_pose()
         left_dist, right_dist = odometry.get_total_distance()
+        balance_ticks = left_enc - right_enc
+        balance_cm = balance_ticks / PULSES_PER_CM if PULSES_PER_CM else 0.0
+        cumulative_balance_cm = left_dist - right_dist
 
         # Update live heading from gyro-derived rotation (wrap to [0,360))
         live_heading_deg = (rotation_deg % 360.0 + 360.0) % 360.0
@@ -604,6 +642,8 @@ def main():
         status_text = execution_status.replace("running_segment_", "Running seg ")
         draw_text(screen, f"Path Status: {status_text}", (hud_x, y), font, status_color)
         y += 22
+        draw_text(screen, f"Calib: PPD={PULSES_PER_DEGREE:.3f}  PPCM={PULSES_PER_CM:.3f}", (hud_x, y), font)
+        y += 18
         # IMU
         draw_text(screen, "IMU:", (hud_x, y), font_big)
         y += 22
@@ -639,6 +679,10 @@ def main():
         draw_text(screen, f"Left (m1): {left_enc}  Right (m2): {right_enc}", (hud_x, y), font)
         y += 18
         draw_text(screen, f"m3: {encoders.get('m3', 0)}  m4: {encoders.get('m4', 0)}", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Δ ticks(L-R): {balance_ticks:+d}  Δ cm: {balance_cm:+.2f}", (hud_x, y), font)
+        y += 18
+        draw_text(screen, f"Cumulative drift: {cumulative_balance_cm:+.2f} cm", (hud_x, y), font)
         y += 18
         draw_text(screen, f"Timestamp: {enc_timestamp}", (hud_x, y), font)
         y += 24

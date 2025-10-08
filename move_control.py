@@ -16,7 +16,12 @@ from advanced import (
     init_bot_control, cleanup, get_latest_encoders, move_by_ticks,
     stop_motors, is_encoder_data_available, wait_for_encoder_data, send_motor
 )
-from calibration_config import load_pulses_per_degree, save_pulses_per_degree
+from calibration_config import (
+    load_pulses_per_degree,
+    load_pulses_per_cm,
+    save_pulses_per_degree,
+    save_pulses_per_cm,
+)
 
 class RobotController:
     def __init__(self):
@@ -24,23 +29,40 @@ class RobotController:
         self.PPR = 5640  # Pulses per rotation
         self.WHEEL_DIAMETER = 4.4  # cm
         self.WHEEL_CIRCUMFERENCE = math.pi * self.WHEEL_DIAMETER  # cm per rotation
-        self.PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE  # pulses per cm of wheel travel
+        self.DEFAULT_PULSES_PER_CM = self.PPR / self.WHEEL_CIRCUMFERENCE
+        self.PULSES_PER_CM = load_pulses_per_cm(self.DEFAULT_PULSES_PER_CM)
         self.PULSES_PER_DEGREE = load_pulses_per_degree()
+        self.session_pulses_per_degree = self.PULSES_PER_DEGREE
+        self.session_pulses_per_cm = self.PULSES_PER_CM
         
         # Control parameters
-        self.rotation_tolerance = 5.0  # degrees - allow ±2 degree error
-        self.distance_tolerance = 4.0  # cm - allow ±1 cm error
-        self.turn_speed = 30 # motor speed for turning (slower = more precise)
-        self.move_speed = 60  # motor speed for movement
+        self.rotation_tolerance = 5.0  # degrees - allow ±5 degree error
+        self.distance_tolerance = 5.0  # cm - allow ±5 cm error
+        self.turn_speed = 45 # motor speed for turning (slower = more precise)
+        self.move_speed = 45  # motor speed for movement
         self.max_turn_time = 10.0  # maximum time to attempt a turn (seconds)
         self.max_move_time = 30.0  # maximum time to attempt a move (seconds)
-        self.enable_error_correction = True  # automatically correct turn errors
+        self.enable_error_correction = True  # automatically correct errors
+        self.max_correction_attempts = 2  # maximum correction iterations
+        self.turn_brake_duration = 0.08
+
+        self.turn_brake_scale = 0.55
+        self.turn_progress_timeout = 1.2
+
+        self.distance_adapt_alpha = 0.25
+        self.move_decel_ratio = 0.22
+        self.move_min_speed_scale = 0.32
+        self.move_brake_scale = 0.5
+        self.move_brake_duration = 0.12
+        self.no_progress_timeout = 1.5
+
+        self.last_turn_adjustment = 0.0
         
         print(f"Robot Encoder Specs:")
         print(f"  PPR: {self.PPR}")
         print(f"  Wheel diameter: {self.WHEEL_DIAMETER} cm")
         print(f"  Wheel circumference: {self.WHEEL_CIRCUMFERENCE:.2f} cm")
-        print(f"  Pulses per cm: {self.PULSES_PER_CM:.2f}")
+        print(f"  Pulses per cm: {self.PULSES_PER_CM:.2f} (default {self.DEFAULT_PULSES_PER_CM:.2f})")
         print(f"  Pulses per degree rotation: {self.PULSES_PER_DEGREE}")
     
     def configure_tolerances(self, rotation_tolerance=None, distance_tolerance=None):
@@ -58,11 +80,21 @@ class RobotController:
         if pulses_per_degree is not None:
             self.PULSES_PER_DEGREE = max(1, float(pulses_per_degree))
             save_pulses_per_degree(self.PULSES_PER_DEGREE)
+            self.session_pulses_per_degree = self.PULSES_PER_DEGREE
+            self.last_turn_adjustment = 0.0
             print(f"PULSES_PER_DEGREE set to {self.PULSES_PER_DEGREE}")
         
         if turn_speed is not None:
             self.turn_speed = max(5, min(50, int(turn_speed)))
             print(f"Turn speed set to {self.turn_speed}")
+
+    def configure_distance_precision(self, pulses_per_cm=None):
+        """Configure and persist encoder pulses-per-centimeter."""
+        if pulses_per_cm is not None:
+            self.PULSES_PER_CM = max(1.0, float(pulses_per_cm))
+            save_pulses_per_cm(self.PULSES_PER_CM)
+            self.session_pulses_per_cm = self.PULSES_PER_CM
+            print(f"PULSES_PER_CM set to {self.PULSES_PER_CM:.3f}")
     
     def configure_error_correction(self, enable=None):
         """Configure error correction settings"""
@@ -105,6 +137,12 @@ class RobotController:
         print(f"Move speed: {self.move_speed}")
         print(f"Turn timeout: {self.max_turn_time:.1f} seconds")
         print(f"Move timeout: {self.max_move_time:.1f} seconds")
+        print(
+            f"Turn calibration: session {self.session_pulses_per_degree:.3f} ppd (persisted {self.PULSES_PER_DEGREE:.3f}, Δ{self.last_turn_adjustment:+.3f})"
+        )
+        print(
+            f"Distance calibration: session {self.session_pulses_per_cm:.3f} ppcm (persisted {self.PULSES_PER_CM:.3f}, Δ{self.session_pulses_per_cm - self.PULSES_PER_CM:+.3f})"
+        )
         print("=" * 30)
         
     def test_esp32_connection(self):
@@ -146,122 +184,144 @@ class RobotController:
         rel_left = current_left - self.start_left
         rel_right = current_right - self.start_right
         return rel_left, rel_right
+
+    def apply_brake(self, left_sign, right_sign, base_speed, scale, duration):
+        """Send a short reverse pulse to counter momentum before fully stopping."""
+        brake_speed = max(0, int(abs(base_speed) * scale))
+        if brake_speed == 0:
+            stop_motors()
+            return
+
+        send_motor(-left_sign * brake_speed, -right_sign * brake_speed)
+        time.sleep(max(0.02, duration))
+        stop_motors()
         
     def turn_to_angle(self, target_degrees):
-        """Turn the robot using encoder differential monitoring"""
-        print(f"Turning {target_degrees:+.1f} degrees using encoder feedback...")
-        
+        """Turn the robot using hardware encoder-based movement."""
+        print(f"Turning {target_degrees:+.1f} degrees using hardware encoder control...")
+
         if abs(target_degrees) < 0.1:
             print("No significant rotation requested.")
             return True
 
-        # Calculate target encoder ticks for this rotation
-        target_ticks = int(abs(target_degrees) * self.PULSES_PER_DEGREE)
-        
-        # Determine turn direction and speeds
-        if target_degrees > 0:
-            # Turn right (clockwise) - positive angles = right turns
-            left_speed = self.turn_speed    # Left motor forward
-            right_speed = -self.turn_speed  # Right motor backward
-            direction_text = "right"
-        else:
-            # Turn left (counter-clockwise) - negative angles = left turns
-            left_speed = -self.turn_speed   # Left motor backward
-            right_speed = self.turn_speed   # Right motor forward
-            direction_text = "left"
+        # Use session calibration value
+        target_ticks = int(round(abs(target_degrees) * self.session_pulses_per_degree))
+        direction = 1 if target_degrees > 0 else -1
+        direction_text = "right (CW)" if direction > 0 else "left (CCW)"
 
-        print(f"Target ticks: {target_ticks} (for {abs(target_degrees):.1f}°)")
-        print(f"Turning {direction_text} at speeds L={left_speed}, R={right_speed}")
-        
-        # Set reference point for measuring actual movement
+        print(f"Target ticks per wheel: {target_ticks} (for {abs(target_degrees):.1f}°)")
+        print(f"Turning {direction_text} at speed {self.turn_speed}")
+        print(f"Using session_pulses_per_degree: {self.session_pulses_per_degree:.3f}")
+
+        # Reset encoder reference to measure actual movement
         self.reset_encoder_reference()
+        time.sleep(0.1)
 
-        # Pause briefly before initiating the turn to let the robot settle
-        time.sleep(1.0)
+        # Use hardware move_by_ticks for precise encoder-based turning
+        # For right turn: left=positive ticks, right=negative ticks
+        # For left turn: left=negative ticks, right=positive ticks
+        left_ticks = direction * target_ticks
+        right_ticks = -direction * target_ticks
+        left_speed = direction * self.turn_speed
+        right_speed = -direction * self.turn_speed
         
-        # Start motors
-        send_motor(left_speed, right_speed)
+        move_by_ticks(left_ticks, right_ticks, left_speed, right_speed)
         
-        # Monitor encoder progress
+        # Wait for movement to complete (ESP32 handles the control loop)
+        # Poll encoders to detect completion
         start_time = time.time()
-        last_progress_time = start_time
+        last_check_ticks = 0.0
+        stall_count = 0
         
         while time.time() - start_time < self.max_turn_time:
             rel_left, rel_right = self.get_relative_position()
+            avg_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
             
-            # Calculate current rotation ticks using weighted average
-            from advanced import MOTOR_FACTOR_LEFT, MOTOR_FACTOR_RIGHT
-            left_weight = MOTOR_FACTOR_LEFT
-            right_weight = MOTOR_FACTOR_RIGHT
-            total_weight = left_weight + right_weight
-            current_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
-            
-            # Check if we've reached the target
-            if current_ticks >= target_ticks:
-                stop_motors()
+            # Check if we've reached target (with small tolerance)
+            if avg_ticks >= target_ticks - 5:
+                time.sleep(0.2)  # Let it settle
                 break
-                
-            # Progress update every half second
-            if time.time() - last_progress_time >= 0.5:
-                progress_pct = (current_ticks / target_ticks) * 100.0 if target_ticks > 0 else 0
-                print(f"  Progress: {current_ticks:.0f}/{target_ticks} ticks ({progress_pct:.1f}%)")
-                last_progress_time = time.time()
             
-            time.sleep(0.05)  # 20Hz monitoring
+            # Stall detection
+            if abs(avg_ticks - last_check_ticks) < 2:
+                stall_count += 1
+                if stall_count > 10:  # 0.5 seconds of no progress
+                    print("⚠️ Turn appears stalled")
+                    break
+            else:
+                stall_count = 0
+            
+            last_check_ticks = avg_ticks
+            time.sleep(0.05)
         else:
-            # Timeout - stop motors
-            stop_motors()
-            
-        time.sleep(0.1)  # Brief pause to let everything settle
-        
-        # Measure final results
+            print("⚠️ Turn timeout reached")
+
+        stop_motors()
+        time.sleep(0.2)
+
+        # Measure final result
         rel_left, rel_right = self.get_relative_position()
-        
-        # Use weighted average based on motor factors for more accurate rotation measurement
-        # This accounts for different motor speeds (MOTOR_FACTOR_LEFT = 0.97)
-        from advanced import MOTOR_FACTOR_LEFT, MOTOR_FACTOR_RIGHT
-        left_weight = MOTOR_FACTOR_LEFT
-        right_weight = MOTOR_FACTOR_RIGHT
-        total_weight = left_weight + right_weight
-        
-        # Weighted average of encoder movement
-        final_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
-        actual_rotation = final_ticks / self.PULSES_PER_DEGREE
-        if target_degrees < 0:
-            actual_rotation = -actual_rotation
-            
+        final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+        actual_rotation = (final_ticks / self.session_pulses_per_degree) * direction
+
         error = target_degrees - actual_rotation
-        
-        print(f"Turn results:")
-        print(f"  Target: {target_degrees:+.1f}° ({target_ticks} ticks)")
-        print(f"  Actual: {actual_rotation:+.1f}° ({final_ticks:.1f} ticks)")
+
+        print("Turn results:")
+        print(f"  Target: {target_degrees:+.1f}° ({target_ticks} ticks per wheel)")
+        print(f"  Actual: {actual_rotation:+.1f}° ({final_ticks:.1f} ticks average)")
         print(f"  Error: {error:+.1f}°")
         print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
-        print(f"  Motor factors: left={left_weight:.2f}, right={right_weight:.2f}")
         print(f"  Tolerance: ±{self.rotation_tolerance:.1f}°")
-        print(f"  Error check: |{error:.1f}| <= {self.rotation_tolerance:.1f} = {abs(error) <= self.rotation_tolerance}")
-        
-        # Consider successful if within tolerance
+
         success = abs(error) <= self.rotation_tolerance
         if success:
             print("✅ Turn completed within tolerance")
-        else:
-            print("⚠️ Turn completed but outside tolerance")
+            return True
+        
+        # Error correction if enabled
+        if not self.enable_error_correction:
+            print("⚠️ Turn completed but outside tolerance (correction disabled)")
+            return False
+        
+        print(f"⚠️ Turn error {error:+.1f}° exceeds tolerance, attempting correction...")
+        
+        # Try up to max_correction_attempts to get within tolerance
+        for attempt in range(self.max_correction_attempts):
+            correction_degrees = -error  # Opposite of error
             
-            if self.enable_error_correction:
-                print(f"Attempting error correction for {abs(error):.1f}° error...")
-                
-                # Attempt error correction
-                correction_success = self.correct_turn_error(error)
-                if correction_success:
-                    print("✅ Error correction successful")
-                    success = True
-                else:
-                    print("❌ Error correction failed")
-            else:
-                print("Error correction disabled")
+            # Don't correct if error is tiny
+            if abs(correction_degrees) < 0.5:
+                print("✅ Error correction converged")
+                return True
             
-        return success
+            print(f"  Correction attempt {attempt + 1}/{self.max_correction_attempts}: adjusting {correction_degrees:+.1f}°")
+            
+            # Make corrective turn (recursive call with correction disabled to avoid infinite loop)
+            saved_correction_flag = self.enable_error_correction
+            self.enable_error_correction = False
+            
+            correction_success = self.turn_to_angle(correction_degrees)
+            
+            self.enable_error_correction = saved_correction_flag
+            
+            if not correction_success:
+                print("❌ Correction turn failed")
+                return False
+            
+            # Measure total rotation from original reference
+            rel_left, rel_right = self.get_relative_position()
+            final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+            actual_rotation = (final_ticks / self.session_pulses_per_degree) * direction
+            error = target_degrees - actual_rotation
+            
+            print(f"  After correction: actual={actual_rotation:+.1f}°, error={error:+.1f}°")
+            
+            if abs(error) <= self.rotation_tolerance:
+                print("✅ Turn corrected successfully")
+                return True
+        
+        print(f"❌ Turn correction failed after {self.max_correction_attempts} attempts")
+        return False
     
     def test_tolerance_logic(self, target_degrees, actual_degrees):
         """Test tolerance logic with specific values"""
@@ -300,7 +360,7 @@ class RobotController:
         
         try:
             # Make correction turn
-            correction_ticks = int(abs(correction_angle) * self.PULSES_PER_DEGREE)
+            correction_ticks = max(1, int(round(abs(correction_angle) * self.session_pulses_per_degree)))
             
             # Determine correction direction
             if correction_angle > 0:
@@ -349,7 +409,7 @@ class RobotController:
             # Measure final correction results
             rel_left, rel_right = self.get_relative_position()
             final_ticks = (abs(rel_left) * left_weight + abs(rel_right) * right_weight) / total_weight
-            actual_correction = final_ticks / self.PULSES_PER_DEGREE
+            actual_correction = final_ticks / self.session_pulses_per_degree
             if correction_angle < 0:
                 actual_correction = -actual_correction
                 
@@ -369,93 +429,128 @@ class RobotController:
             self.turn_speed = original_speed
     
     def move_distance(self, target_cm):
-        """Move the robot using encoder distance monitoring"""
+        """Move the robot using hardware encoder-based movement."""
         if abs(target_cm) < 0.1:
             print("No significant movement requested.")
             return True
-            
-        print(f"Moving {target_cm:+.1f} cm using encoder feedback...")
-        
-        # Calculate target encoder ticks for this distance
-        target_ticks = int(abs(target_cm) * self.PULSES_PER_CM)
-        
-        # Determine movement direction and speeds
-        if target_cm > 0:
-            # Move forward
-            left_speed = self.move_speed
-            right_speed = self.move_speed
-            direction_text = "forward"
-        else:
-            # Move backward
-            left_speed = -self.move_speed
-            right_speed = -self.move_speed
-            direction_text = "backward"
-            
+
+        print(f"Moving {target_cm:+.1f} cm using hardware encoder control...")
+
+        target_ticks = int(round(abs(target_cm) * self.session_pulses_per_cm))
+        direction = 1 if target_cm > 0 else -1
+        direction_text = "forward" if direction > 0 else "backward"
+
         print(f"Target ticks: {target_ticks} (for {abs(target_cm):.1f} cm)")
         print(f"Moving {direction_text} at speed {self.move_speed}")
-        
-        # Set reference point for measuring actual movement
+        print(f"Using session_pulses_per_cm: {self.session_pulses_per_cm:.3f}")
+
+        # Reset encoder reference to measure actual movement
         self.reset_encoder_reference()
-        
-        # Start motors
-        send_motor(left_speed, right_speed)
-        
-        # Monitor encoder progress
+        time.sleep(0.1)
+
+        # Use hardware move_by_ticks for precise encoder-based movement
+        left_ticks = direction * target_ticks
+        right_ticks = direction * target_ticks
+        left_speed = direction * self.move_speed
+        right_speed = direction * self.move_speed
+
+        move_by_ticks(left_ticks, right_ticks, left_speed, right_speed)
+
+        # Wait for movement to complete (ESP32 handles the control loop)
         start_time = time.time()
-        last_progress_time = start_time
-        
+        last_check_ticks = 0.0
+        stall_count = 0
+
         while time.time() - start_time < self.max_move_time:
             rel_left, rel_right = self.get_relative_position()
-            
-            # Calculate current distance ticks (average of both wheels, taking absolute values)
-            current_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
-            
-            # Check if we've reached the target
-            if current_ticks >= target_ticks:
-                stop_motors()
+            avg_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+
+            # Check if we've reached target (with small tolerance)
+            if avg_ticks >= target_ticks - 10:
+                time.sleep(0.2)  # Let it settle
                 break
-                
-            # Progress update every half second
-            if time.time() - last_progress_time >= 0.5:
-                progress_pct = (current_ticks / target_ticks) * 100.0 if target_ticks > 0 else 0
-                current_distance = current_ticks / self.PULSES_PER_CM
-                print(f"  Progress: {current_ticks:.0f}/{target_ticks} ticks ({current_distance:.1f}/{abs(target_cm):.1f} cm, {progress_pct:.1f}%)")
-                last_progress_time = time.time()
-            
-            time.sleep(0.05)  # 20Hz monitoring
+
+            # Stall detection
+            if abs(avg_ticks - last_check_ticks) < 5:
+                stall_count += 1
+                if stall_count > 10:  # 0.5 seconds of no progress
+                    print("⚠️ Movement appears stalled")
+                    break
+            else:
+                stall_count = 0
+
+            last_check_ticks = avg_ticks
+            time.sleep(0.05)
         else:
-            # Timeout - stop motors
-            stop_motors()
-            
-        time.sleep(0.1)  # Brief pause to let everything settle
-        
-        # Measure final results
+            print("⚠️ Movement timeout reached")
+
+        stop_motors()
+        time.sleep(0.2)
+
+        # Measure final result
         rel_left, rel_right = self.get_relative_position()
         final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
-        actual_distance = final_ticks / self.PULSES_PER_CM
-        
-        # Apply direction sign
-        if target_cm < 0:
-            actual_distance = -actual_distance
-        
+        actual_distance = (final_ticks / self.session_pulses_per_cm) * direction
+
         error = target_cm - actual_distance
-        
-        print(f"Movement results:")
+
+        print("Movement results:")
         print(f"  Target: {target_cm:+.1f} cm ({target_ticks} ticks)")
         print(f"  Actual: {actual_distance:+.1f} cm ({final_ticks:.0f} ticks)")
         print(f"  Error: {error:+.1f} cm")
         print(f"  Encoder deltas: left={rel_left}, right={rel_right}")
-        print(f"  Left wheel: {abs(rel_left) / self.PULSES_PER_CM:.1f} cm")
-        print(f"  Right wheel: {abs(rel_right) / self.PULSES_PER_CM:.1f} cm")
-        
-        # Consider successful if within tolerance
+        print(f"  Left wheel: {abs(rel_left) / self.session_pulses_per_cm:.1f} cm")
+        print(f"  Right wheel: {abs(rel_right) / self.session_pulses_per_cm:.1f} cm")
+
         success = abs(error) <= self.distance_tolerance
         if success:
             print("✅ Movement completed within tolerance")
-        else:
-            print("⚠️ Movement completed but outside tolerance")
+            return True
+        
+        # Error correction if enabled
+        if not self.enable_error_correction:
+            print("⚠️ Movement completed but outside tolerance (correction disabled)")
+            return False
+        
+        print(f"⚠️ Movement error {error:+.1f} cm exceeds tolerance, attempting correction...")
+        
+        # Try up to max_correction_attempts to get within tolerance
+        for attempt in range(self.max_correction_attempts):
+            correction_cm = error  # Move the error distance (positive = forward, negative = backward)
             
-        return success
+            # Don't correct if error is tiny
+            if abs(correction_cm) < 0.5:
+                print("✅ Error correction converged")
+                return True
+            
+            print(f"  Correction attempt {attempt + 1}/{self.max_correction_attempts}: adjusting {correction_cm:+.1f} cm")
+            
+            # Make corrective move (recursive call with correction disabled to avoid infinite loop)
+            saved_correction_flag = self.enable_error_correction
+            self.enable_error_correction = False
+            
+            correction_success = self.move_distance(correction_cm)
+            
+            self.enable_error_correction = saved_correction_flag
+            
+            if not correction_success:
+                print("❌ Correction move failed")
+                return False
+            
+            # Measure total distance from original reference
+            rel_left, rel_right = self.get_relative_position()
+            final_ticks = (abs(rel_left) + abs(rel_right)) / 2.0
+            actual_distance = (final_ticks / self.session_pulses_per_cm) * direction
+            error = target_cm - actual_distance
+            
+            print(f"  After correction: actual={actual_distance:+.1f} cm, error={error:+.1f} cm")
+            
+            if abs(error) <= self.distance_tolerance:
+                print("✅ Movement corrected successfully")
+                return True
+        
+        print(f"❌ Movement correction failed after {self.max_correction_attempts} attempts")
+        return False
     
     def execute_command(self, rotation_degrees, movement_cm):
         """Execute a rotation followed by movement command"""

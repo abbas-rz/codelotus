@@ -65,4 +65,4 @@
 #define COUNTS_PER_WHEEL_ROTATION (ENCODER_PPR * GEAR_RATIO)  // 600
 #define WHEEL_CIRCUMFERENCE_MM (3.1416f * WHEEL_DIAMETER_MM)   // ~138.2
 #define DISTANCE_PER_PULSE_MM (WHEEL_CIRCUMFERENCE_MM / COUNTS_PER_WHEEL_ROTATION) // ~0.2303
-#define WHEEL_BASE_MM 0  // TODO: measure this in mm and set a proper value
+#define WHEEL_BASE_MM 118.6  // Distance between left and right wheels (calculated from calibration)

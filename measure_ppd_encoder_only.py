@@ -25,7 +25,7 @@ from advanced import (
 )
 from calibration_config import load_pulses_per_degree, save_pulses_per_degree
 
-DEFAULT_SPEED = 35
+DEFAULT_SPEED = 45
 LOWER_BOUND = 5.0
 UPPER_BOUND = 200.0
 TOLERANCE_TICKS = 40
