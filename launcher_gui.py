@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Simple GUI launcher for IHFC Prepsuite utilities.
+"""Modern GUI launcher for IHFC Prepsuite utilities.
 
+Windows 11-inspired design with dark mode support and improved UX.
 Provides quick access to commonly used tools and displays the current
 calibration values stored in ``robot_calibration.json``.
 """
@@ -22,44 +23,183 @@ from calibration_config import (
 
 BASE_DIR = Path(__file__).resolve().parent
 
-# Utility definitions: title, description, relative script path, optional args
+# Utility definitions: title, description, relative script path, optional args, icon emoji
 UTILITIES: Sequence[Mapping[str, object]] = (
     {
-        "title": "Manual Control (advanced.py)",
-        "description": "Keyboard-driven motor control interface.",
+        "title": "Manual Control",
+        "description": "Keyboard-driven motor control interface",
         "script": BASE_DIR / "advanced.py",
+        "icon": "🎮",
+        "category": "Control",
     },
     {
         "title": "Telemetry UI",
-        "description": "Real-time arena telemetry viewer.",
+        "description": "Real-time arena telemetry viewer",
         "script": BASE_DIR / "telemetry_ui.py",
+        "icon": "📊",
+        "category": "Monitor",
     },
     {
         "title": "Fruit Layout UI",
-        "description": "Tag fruit positions and update red/black CSVs.",
+        "description": "Tag fruit positions and update red/black CSVs",
         "script": BASE_DIR / "fruit_ui.py",
+        "icon": "🍎",
+        "category": "Setup",
     },
     {
         "title": "Measure Arena",
-        "description": "Capture arena measurements and checkpoints.",
+        "description": "Capture arena measurements and checkpoints",
         "script": BASE_DIR / "measure_arena.py",
+        "icon": "📐",
+        "category": "Setup",
     },
 )
 
 
+# Modern color schemes
+class ColorScheme:
+    """Color schemes for light and dark modes."""
+    
+    # Light Mode (Windows 11 inspired)
+    LIGHT = {
+        "bg": "#F3F3F3",
+        "fg": "#1F1F1F",
+        "card_bg": "#FFFFFF",
+        "card_hover": "#F9F9F9",
+        "accent": "#0067C0",
+        "accent_hover": "#005A9E",
+        "border": "#E5E5E5",
+        "text_secondary": "#616161",
+        "success": "#107C10",
+        "warning": "#F7630C",
+        "button_bg": "#F3F3F3",
+        "button_hover": "#E5E5E5",
+        "shadow": "#00000010",
+    }
+    
+    # Dark Mode (Windows 11 inspired)
+    DARK = {
+        "bg": "#202020",
+        "fg": "#FFFFFF",
+        "card_bg": "#2B2B2B",
+        "card_hover": "#323232",
+        "accent": "#60CDFF",
+        "accent_hover": "#4FB3E3",
+        "border": "#3F3F3F",
+        "text_secondary": "#CCCCCC",
+        "success": "#6CCB5F",
+        "warning": "#FFB900",
+        "button_bg": "#2B2B2B",
+        "button_hover": "#323232",
+        "shadow": "#00000030",
+    }
+
+
+class ModernButton(tk.Canvas):
+    """Custom button widget with hover effects and modern styling."""
+    
+    def __init__(self, parent, text, command, colors, width=120, height=36, 
+                 style="primary", **kwargs):
+        super().__init__(parent, width=width, height=height, 
+                        bg=colors["card_bg"], highlightthickness=0, **kwargs)
+        
+        self.colors = colors
+        self.command = command
+        self.text = text
+        self.style = style
+        self.width = width
+        self.height = height
+        self.is_hovered = False
+        
+        # Determine colors based on style
+        if style == "primary":
+            self.bg_color = colors["accent"]
+            self.hover_color = colors["accent_hover"]
+            self.text_color = "#FFFFFF"
+        else:  # secondary
+            self.bg_color = colors["button_bg"]
+            self.hover_color = colors["button_hover"]
+            self.text_color = colors["fg"]
+        
+        self.draw()
+        
+        # Bind events
+        self.bind("<Enter>", self.on_enter)
+        self.bind("<Leave>", self.on_leave)
+        self.bind("<Button-1>", self.on_click)
+        
+    def draw(self):
+        self.delete("all")
+        color = self.hover_color if self.is_hovered else self.bg_color
+        
+        # Rounded rectangle
+        radius = 6
+        self.create_rounded_rect(2, 2, self.width-2, self.height-2, radius, 
+                                 fill=color, outline="")
+        
+        # Text
+        self.create_text(self.width/2, self.height/2, text=self.text, 
+                        fill=self.text_color, font=("Segoe UI", 10, "normal"))
+    
+    def create_rounded_rect(self, x1, y1, x2, y2, radius, **kwargs):
+        points = [
+            x1+radius, y1,
+            x2-radius, y1,
+            x2, y1,
+            x2, y1+radius,
+            x2, y2-radius,
+            x2, y2,
+            x2-radius, y2,
+            x1+radius, y2,
+            x1, y2,
+            x1, y2-radius,
+            x1, y1+radius,
+            x1, y1
+        ]
+        return self.create_polygon(points, smooth=True, **kwargs)
+    
+    def on_enter(self, event):
+        self.is_hovered = True
+        self.draw()
+        
+    def on_leave(self, event):
+        self.is_hovered = False
+        self.draw()
+        
+    def on_click(self, event):
+        if self.command:
+            self.command()
+
+
 class LauncherApp:
-    """Tkinter application wrapper."""
+    """Modern Tkinter application wrapper."""
 
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("IHFC Utility Launcher")
-        self.root.geometry("640x380")
-
-        # Use ttk themed widgets for a cleaner look
-        self.style = ttk.Style(self.root)
-        if "clam" in self.style.theme_names():
-            self.style.theme_use("clam")
-
+        self.root.title("IHFC Robot Control Suite")
+        
+        # Get screen dimensions and center window
+        screen_width = root.winfo_screenwidth()
+        screen_height = root.winfo_screenheight()
+        window_width = 900
+        window_height = 650
+        x = (screen_width - window_width) // 2
+        y = (screen_height - window_height) // 2
+        self.root.geometry(f"{window_width}x{window_height}+{x}+{y}")
+        
+        # Set minimum size
+        self.root.minsize(800, 600)
+        
+        # Dark mode toggle
+        self.dark_mode = True  # Default to dark mode
+        self.colors = ColorScheme.DARK if self.dark_mode else ColorScheme.LIGHT
+        
+        # Configure root window
+        self.root.configure(bg=self.colors["bg"])
+        
+        # Remove window decorations padding
+        self.root.option_add("*tearOff", False)
+        
         self._build_layout()
         self.refresh_calibration()
 
@@ -67,96 +207,351 @@ class LauncherApp:
     # UI construction helpers
     # ------------------------------------------------------------------
     def _build_layout(self) -> None:
-        main = ttk.Frame(self.root, padding=16)
-        main.pack(fill=tk.BOTH, expand=True)
+        # Main container
+        main = tk.Frame(self.root, bg=self.colors["bg"])
+        main.pack(fill=tk.BOTH, expand=True, padx=24, pady=24)
+        
+        # Header with title and theme toggle
+        header = tk.Frame(main, bg=self.colors["bg"])
+        header.pack(fill=tk.X, pady=(0, 24))
+        
+        # Title
+        title_frame = tk.Frame(header, bg=self.colors["bg"])
+        title_frame.pack(side=tk.LEFT)
+        
+        title = tk.Label(
+            title_frame,
+            text="🤖 IHFC Robot Suite",
+            font=("Segoe UI", 24, "bold"),
+            fg=self.colors["fg"],
+            bg=self.colors["bg"]
+        )
+        title.pack(anchor=tk.W)
+        
+        subtitle = tk.Label(
+            title_frame,
+            text="Control • Monitor • Calibrate",
+            font=("Segoe UI", 11),
+            fg=self.colors["text_secondary"],
+            bg=self.colors["bg"]
+        )
+        subtitle.pack(anchor=tk.W, pady=(4, 0))
+        
+        # Theme toggle button
+        self.theme_btn = ModernButton(
+            header,
+            text="☀️ Light" if self.dark_mode else "🌙 Dark",
+            command=self.toggle_theme,
+            colors=self.colors,
+            width=100,
+            style="secondary"
+        )
+        self.theme_btn.pack(side=tk.RIGHT)
+        
+        # Content area (2 columns)
+        content = tk.Frame(main, bg=self.colors["bg"])
+        content.pack(fill=tk.BOTH, expand=True)
+        
+        # Left column - Utilities (60%)
+        left_col = tk.Frame(content, bg=self.colors["bg"])
+        left_col.pack(fill=tk.BOTH, expand=True, side=tk.LEFT, padx=(0, 16))
+        
+        utilities_label = tk.Label(
+            left_col,
+            text="Utilities",
+            font=("Segoe UI", 16, "bold"),
+            fg=self.colors["fg"],
+            bg=self.colors["bg"]
+        )
+        utilities_label.pack(anchor=tk.W, pady=(0, 12))
+        
+        # Utilities cards container
+        self.util_cards = tk.Frame(left_col, bg=self.colors["bg"])
+        self.util_cards.pack(fill=tk.BOTH, expand=True)
+        
+        for idx, utility in enumerate(UTILITIES):
+            self._create_utility_card(self.util_cards, utility, idx)
+        
+        # Right column - Calibration (40%)
+        right_col = tk.Frame(content, bg=self.colors["bg"], width=320)
+        right_col.pack(fill=tk.BOTH, expand=False, side=tk.RIGHT)
+        right_col.pack_propagate(False)
+        
+        # Calibration section
+        self._build_calibration_panel(right_col)
 
-        util_frame = ttk.LabelFrame(main, text="Utilities", padding=(12, 10))
-        util_frame.pack(fill=tk.BOTH, expand=True, side=tk.LEFT)
+    def _create_utility_card(self, parent, utility, index):
+        """Create a modern card for each utility."""
+        card = tk.Frame(
+            parent,
+            bg=self.colors["card_bg"],
+            relief=tk.FLAT,
+            bd=0
+        )
+        card.pack(fill=tk.X, pady=(0, 12))
+        
+        # Add subtle border
+        card.configure(highlightbackground=self.colors["border"], 
+                      highlightthickness=1)
+        
+        # Inner padding
+        inner = tk.Frame(card, bg=self.colors["card_bg"])
+        inner.pack(fill=tk.BOTH, expand=True, padx=20, pady=16)
+        
+        # Top row: Icon + Title + Launch button
+        top_row = tk.Frame(inner, bg=self.colors["card_bg"])
+        top_row.pack(fill=tk.X)
+        
+        # Icon
+        icon_label = tk.Label(
+            top_row,
+            text=utility["icon"],
+            font=("Segoe UI", 20),
+            bg=self.colors["card_bg"]
+        )
+        icon_label.pack(side=tk.LEFT, padx=(0, 12))
+        
+        # Title and category
+        text_frame = tk.Frame(top_row, bg=self.colors["card_bg"])
+        text_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        
+        title_label = tk.Label(
+            text_frame,
+            text=utility["title"],
+            font=("Segoe UI", 13, "bold"),
+            fg=self.colors["fg"],
+            bg=self.colors["card_bg"],
+            anchor=tk.W
+        )
+        title_label.pack(anchor=tk.W)
+        
+        category_label = tk.Label(
+            text_frame,
+            text=f"• {utility['category']}",
+            font=("Segoe UI", 9),
+            fg=self.colors["accent"],
+            bg=self.colors["card_bg"],
+            anchor=tk.W
+        )
+        category_label.pack(anchor=tk.W)
+        
+        # Launch button
+        launch_btn = ModernButton(
+            top_row,
+            text="Launch →",
+            command=lambda u=utility: self.launch_utility(u),
+            colors=self.colors,
+            width=110,
+            style="primary"
+        )
+        launch_btn.pack(side=tk.RIGHT)
+        
+        # Description
+        desc_label = tk.Label(
+            inner,
+            text=utility["description"],
+            font=("Segoe UI", 10),
+            fg=self.colors["text_secondary"],
+            bg=self.colors["card_bg"],
+            anchor=tk.W,
+            justify=tk.LEFT,
+            wraplength=450
+        )
+        desc_label.pack(anchor=tk.W, pady=(8, 0))
+        
+        # Hover effects
+        def on_enter(e):
+            card.configure(bg=self.colors["card_hover"])
+            inner.configure(bg=self.colors["card_hover"])
+            top_row.configure(bg=self.colors["card_hover"])
+            text_frame.configure(bg=self.colors["card_hover"])
+            icon_label.configure(bg=self.colors["card_hover"])
+            title_label.configure(bg=self.colors["card_hover"])
+            category_label.configure(bg=self.colors["card_hover"])
+            desc_label.configure(bg=self.colors["card_hover"])
+            
+        def on_leave(e):
+            card.configure(bg=self.colors["card_bg"])
+            inner.configure(bg=self.colors["card_bg"])
+            top_row.configure(bg=self.colors["card_bg"])
+            text_frame.configure(bg=self.colors["card_bg"])
+            icon_label.configure(bg=self.colors["card_bg"])
+            title_label.configure(bg=self.colors["card_bg"])
+            category_label.configure(bg=self.colors["card_bg"])
+            desc_label.configure(bg=self.colors["card_bg"])
+        
+        card.bind("<Enter>", on_enter)
+        card.bind("<Leave>", on_leave)
+        inner.bind("<Enter>", on_enter)
+        inner.bind("<Leave>", on_leave)
 
-        utilities = list(UTILITIES)
-        for idx, utility in enumerate(utilities):
-            row = ttk.Frame(util_frame, padding=(0, 4))
-            row.pack(fill=tk.X, expand=True, padx=4, pady=2)
-
-            title = ttk.Label(row, text=utility["title"], font=("Segoe UI", 11, "bold"))
-            title.pack(anchor=tk.W)
-
-            desc = ttk.Label(row, text=utility["description"], font=("Segoe UI", 9))
-            desc.pack(anchor=tk.W, padx=(12, 0))
-
-            launch_btn = ttk.Button(
-                row,
-                text="Launch",
-                command=lambda util=utility: self.launch_utility(util),
-                width=16,
-            )
-            launch_btn.pack(anchor=tk.E, pady=(4, 2))
-
-            if idx < len(utilities) - 1:
-                ttk.Separator(util_frame, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=4)
-
-        side_frame = ttk.Frame(main, padding=(12, 0))
-        side_frame.pack(fill=tk.Y, expand=False, side=tk.RIGHT)
-
-        calib_frame = ttk.LabelFrame(side_frame, text="Calibration", padding=(10, 10))
-        calib_frame.pack(fill=tk.X)
-
+    def _build_calibration_panel(self, parent):
+        """Build the modern calibration panel."""
+        # Section title
+        calib_label = tk.Label(
+            parent,
+            text="Calibration",
+            font=("Segoe UI", 16, "bold"),
+            fg=self.colors["fg"],
+            bg=self.colors["bg"]
+        )
+        calib_label.pack(anchor=tk.W, pady=(0, 12))
+        
+        # Calibration card
+        calib_card = tk.Frame(
+            parent,
+            bg=self.colors["card_bg"],
+            highlightbackground=self.colors["border"],
+            highlightthickness=1
+        )
+        calib_card.pack(fill=tk.BOTH, expand=True)
+        
+        inner = tk.Frame(calib_card, bg=self.colors["card_bg"])
+        inner.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+        
+        # Calibration values
         self.ppd_var = tk.StringVar()
         self.ppcm_var = tk.StringVar()
         self.motor_factor_var = tk.StringVar()
         self.updated_var = tk.StringVar()
-
-        ttk.Label(calib_frame, textvariable=self.ppd_var).pack(anchor=tk.W)
-        ttk.Label(calib_frame, textvariable=self.ppcm_var).pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(calib_frame, textvariable=self.motor_factor_var).pack(anchor=tk.W, pady=(4, 0))
-        ttk.Label(
-            calib_frame, textvariable=self.updated_var, font=("Segoe UI", 8, "italic")
-        ).pack(anchor=tk.W, pady=(2, 0))
-
-        button_bar = ttk.Frame(calib_frame)
-        button_bar.pack(anchor=tk.W, pady=(8, 0))
-        ttk.Button(
-            button_bar,
-            text="Set Pulses/°",
-            command=self.update_pulses_per_degree,
-            width=14,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(
-            button_bar, text="Set Pulses/cm", command=self.update_pulses_per_cm, width=14
-        ).pack(side=tk.LEFT)
-
-        # Tuner shortcuts: launch the interactive PPD/PPC wizards
-        tuner_bar = ttk.Frame(calib_frame)
-        tuner_bar.pack(anchor=tk.W, pady=(8, 0))
-        ttk.Button(
-            tuner_bar,
-            text="Tune PPD",
-            command=self.launch_ppd_tuner,
-            width=14,
-        ).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(
-            tuner_bar,
-            text="Tune PPC",
-            command=self.launch_ppc_tuner,
-            width=14,
-        ).pack(side=tk.LEFT)
-
-        ttk.Button(calib_frame, text="Refresh", command=self.refresh_calibration).pack(
-            anchor=tk.W, pady=(6, 0)
+        
+        # Value displays with modern styling
+        self._create_value_display(inner, "📐 Pulses per Degree", self.ppd_var)
+        self._create_value_display(inner, "📏 Pulses per Centimeter", self.ppcm_var)
+        self._create_value_display(inner, "⚙️ Motor Factors (L/R)", self.motor_factor_var)
+        
+        # Last updated timestamp
+        updated_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+        updated_frame.pack(fill=tk.X, pady=(16, 0))
+        
+        updated_label = tk.Label(
+            updated_frame,
+            textvariable=self.updated_var,
+            font=("Segoe UI", 9, "italic"),
+            fg=self.colors["text_secondary"],
+            bg=self.colors["card_bg"]
         )
-        ttk.Button(
-            calib_frame,
-            text="Straight-Line Calibrator",
+        updated_label.pack(anchor=tk.W)
+        
+        # Separator
+        sep = tk.Frame(inner, bg=self.colors["border"], height=1)
+        sep.pack(fill=tk.X, pady=(20, 16))
+        
+        # Quick actions section
+        actions_label = tk.Label(
+            inner,
+            text="Quick Actions",
+            font=("Segoe UI", 12, "bold"),
+            fg=self.colors["fg"],
+            bg=self.colors["card_bg"]
+        )
+        actions_label.pack(anchor=tk.W, pady=(0, 12))
+        
+        # Calibration tune buttons (prominent)
+        tune_frame = tk.Frame(inner, bg=self.colors["card_bg"])
+        tune_frame.pack(fill=tk.X, pady=(0, 8))
+        
+        ModernButton(
+            tune_frame,
+            text="🎯 Tune PPD",
+            command=self.launch_ppd_tuner,
+            colors=self.colors,
+            width=135,
+            height=42,
+            style="primary"
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        
+        ModernButton(
+            tune_frame,
+            text="🎯 Tune PPC",
+            command=self.launch_ppc_tuner,
+            colors=self.colors,
+            width=135,
+            height=42,
+            style="primary"
+        ).pack(side=tk.LEFT)
+        
+        # Secondary action buttons
+        ModernButton(
+            inner,
+            text="📐 Straight-Line Calibrator",
             command=self.launch_straight_calibrator,
-            width=24,
-        ).pack(anchor=tk.W, pady=(6, 0))
-
-        ttk.Button(
-            side_frame,
-            text="Open Calibration File",
+            colors=self.colors,
+            width=280,
+            style="secondary"
+        ).pack(fill=tk.X, pady=(8, 0))
+        
+        ModernButton(
+            inner,
+            text="✏️ Set Pulses/Degree",
+            command=self.update_pulses_per_degree,
+            colors=self.colors,
+            width=280,
+            style="secondary"
+        ).pack(fill=tk.X, pady=(8, 0))
+        
+        ModernButton(
+            inner,
+            text="✏️ Set Pulses/Centimeter",
+            command=self.update_pulses_per_cm,
+            colors=self.colors,
+            width=280,
+            style="secondary"
+        ).pack(fill=tk.X, pady=(8, 0))
+        
+        ModernButton(
+            inner,
+            text="📄 Open Config File",
             command=self.open_calibration_file,
-            width=24,
-        ).pack(anchor=tk.NW, pady=(20, 0))
+            colors=self.colors,
+            width=280,
+            style="secondary"
+        ).pack(fill=tk.X, pady=(8, 0))
+        
+        # Refresh button at bottom
+        ModernButton(
+            inner,
+            text="🔄 Refresh",
+            command=self.refresh_calibration,
+            colors=self.colors,
+            width=280,
+            style="secondary"
+        ).pack(fill=tk.X, pady=(16, 0))
+
+    def _create_value_display(self, parent, label_text, variable):
+        """Create a modern value display row."""
+        frame = tk.Frame(parent, bg=self.colors["card_bg"])
+        frame.pack(fill=tk.X, pady=(0, 12))
+        
+        label = tk.Label(
+            frame,
+            text=label_text,
+            font=("Segoe UI", 10),
+            fg=self.colors["text_secondary"],
+            bg=self.colors["card_bg"]
+        )
+        label.pack(anchor=tk.W)
+        
+        value = tk.Label(
+            frame,
+            textvariable=variable,
+            font=("Consolas", 12, "bold"),
+            fg=self.colors["fg"],
+            bg=self.colors["card_bg"]
+        )
+        value.pack(anchor=tk.W, pady=(4, 0))
+
+    def toggle_theme(self):
+        """Toggle between light and dark mode."""
+        self.dark_mode = not self.dark_mode
+        self.colors = ColorScheme.DARK if self.dark_mode else ColorScheme.LIGHT
+        
+        # Rebuild the entire UI with new colors
+        for widget in self.root.winfo_children():
+            widget.destroy()
+        
+        self._build_layout()
+        self.refresh_calibration()
 
     # ------------------------------------------------------------------
     # Calibration helpers
@@ -168,23 +563,21 @@ class LauncherApp:
         updated = config.get("updated_at") or "Unknown"
 
         try:
-            ppd_text = f"Pulses/degree: {float(ppd):.3f}"
+            ppd_text = f"{float(ppd):.3f}"
         except (TypeError, ValueError):
-            ppd_text = "Pulses/degree: --"
+            ppd_text = "--"
 
         try:
-            ppcm_text = f"Pulses/cm: {float(ppcm):.3f}"
+            ppcm_text = f"{float(ppcm):.3f}"
         except (TypeError, ValueError):
-            ppcm_text = "Pulses/cm: --"
+            ppcm_text = "--"
 
         left_factor = config.get("motor_factor_left")
         right_factor = config.get("motor_factor_right")
         try:
-            motor_factor_text = (
-                f"Motor factors L/R: {float(left_factor):.3f} / {float(right_factor):.3f}"
-            )
+            motor_factor_text = f"{float(left_factor):.3f} / {float(right_factor):.3f}"
         except (TypeError, ValueError):
-            motor_factor_text = "Motor factors L/R: -- / --"
+            motor_factor_text = "-- / --"
 
         self.ppd_var.set(ppd_text)
         self.ppcm_var.set(ppcm_text)

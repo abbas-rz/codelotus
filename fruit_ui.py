@@ -206,6 +206,7 @@ def main():
 
     show_grid = True
     show_help = True
+    enable_corner_recalibration = True  # Enable reverse + corner ram sequence
     active_mode = None  # "red" or "black"
     positions = compute_fruit_positions(SPACING_CM_DEFAULT, OFFSETS_FROM_RIGHT_CM)
     fruit_colors: dict[tuple[int, int], str] = {}
@@ -260,6 +261,9 @@ def main():
                     show_grid = not show_grid
                 elif e.key == pg.K_h:
                     show_help = not show_help
+                elif e.key == pg.K_c:
+                    enable_corner_recalibration = not enable_corner_recalibration
+                    status_message = f"Corner recalibration: {'ENABLED' if enable_corner_recalibration else 'DISABLED'}"
                 elif e.key == pg.K_r:
                     active_mode = "red"
                 elif e.key == pg.K_b:
@@ -304,7 +308,7 @@ def main():
                     pending_rect_corner = None
                     active_mode = None
                     try:
-                        checkpoints, segments = build_auto_path(script_dir, start_point_cm, end_point_cm, final_dest_cm)
+                        checkpoints, segments = build_auto_path(script_dir, start_point_cm, end_point_cm, final_dest_cm, enable_corner_recalibration)
                         if segments:
                             status_message = f"Path saved: {len(segments)} segments"
                         else:
@@ -450,9 +454,14 @@ def main():
             hud_y += 20
         draw_text(screen, f"No-go zones: {len(nogo_points)} points, {len(nogo_rects)} rectangles (≥ {nogo_clearance:.1f} cm)", (hud_x, hud_y), font)
         hud_y += 20
+        # Show corner recalibration status
+        recal_status = "ON" if enable_corner_recalibration else "OFF"
+        recal_color = (100, 255, 100) if enable_corner_recalibration else (150, 150, 150)
+        draw_text(screen, f"Corner Recalibration: {recal_status} (press C to toggle)", (hud_x, hud_y), font, recal_color)
+        hud_y += 20
         if show_help:
             mode = active_mode or "none"
-            draw_text(screen, f"Keys: R=red mode, B=black mode, Click=tag, G=grid, H=help, Esc=quit  [mode: {mode}]", (hud_x, hud_y), font)
+            draw_text(screen, f"Keys: R=red mode, B=black mode, Click=tag, G=grid, H=help, C=recal, Esc=quit  [mode: {mode}]", (hud_x, hud_y), font)
 
         # Draw buttons and status
         draw_button(screen, set_start_rect, "Set Start", font_big, active=(select_mode == "start"))

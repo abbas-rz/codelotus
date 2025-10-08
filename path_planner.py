@@ -528,14 +528,21 @@ def save_final_destination(script_dir, point):
         print(f"ERROR saving final destination: {exc}")
 
 
-def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None):
+def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None, enable_corner_recalibration=True):
     """
     Build a path going from start through all red fruits and ending at end, avoiding others.
     After reaching end_xy, optionally:
-    1. Ram into corner for recalibration (forward ~10cm)
-    2. Reverse back (negative distance)
+    1. Reverse 10cm from end point (if enable_corner_recalibration is True)
+    2. Ram into bottom-left corner for recalibration (forward until corner hit)
     3. Collect black fruits
     4. Go to final destination
+    
+    Args:
+        script_dir: Directory containing config files
+        start_xy: Starting position (x, y) in cm
+        end_xy: End position (x, y) in cm after collecting red fruits
+        final_dest_xy: Final destination after black fruit collection
+        enable_corner_recalibration: If True, adds reverse + corner ram sequence
     
     - Reads red.csv as targets, black.csv and untagged (green) fruits as obstacles.
     - If green.csv not provided, greens are synthesized from fruit_ui defaults.
@@ -565,6 +572,13 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None):
 
     nogo_points, nogo_rects, nogo_clearance = load_no_go_zones(script_dir)
     nogo_clearance = max(nogo_clearance, NO_GO_CLEARANCE_CM)
+    print(f"Path planning obstacle setup:")
+    print(f"  MIN_CLEARANCE_CM (fruits): {MIN_CLEARANCE_CM} cm")
+    print(f"  No-go zone clearance: {nogo_clearance} cm")
+    print(f"  Black fruits: {len(blacks)}")
+    print(f"  Green fruits (obstacles): {len([g for g in greens if not_near_red(g, reds)])}")
+    print(f"  No-go points: {len(nogo_points)}")
+    print(f"  No-go rectangles: {len(nogo_rects)}")
     for (nx, ny) in nogo_points:
         obstacles.append(_make_point_obstacle(nx, ny, nogo_clearance))
     for (x1, y1, x2, y2) in nogo_rects:
@@ -614,53 +628,89 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None):
             checkpoints.append(wp)
 
     # --- Enhanced path: corner recalibration, reverse, black fruits, final destination ---
-    # If final destination is set, add the enhanced sequence
     recalibration_checkpoint_idx = None  # Track where recalibration ram starts
     reverse_checkpoint_idx = None  # Track where reverse starts
     
-    if final_dest_xy is not None:
+    # Step 1: Corner recalibration sequence (if enabled and final destination is set)
+    if enable_corner_recalibration and final_dest_xy is not None:
         last_checkpoint = checkpoints[-1]
-        
-        # Step 1: Ram into corner for recalibration (~10cm forward in current direction)
-        # Determine corner ramming direction based on end point proximity to corners
         ex, ey = last_checkpoint
         
-        # Find nearest corner
-        corners = [
-            (0, 0), (ARENA_WIDTH_CM, 0),
-            (0, ARENA_HEIGHT_CM), (ARENA_WIDTH_CM, ARENA_HEIGHT_CM)
-        ]
-        nearest_corner = min(corners, key=lambda c: _dist(last_checkpoint, c))
+        print(f"\n🔄 Corner recalibration sequence enabled")
         
-        # Ram point: move 10cm towards the corner
-        cx, cy = nearest_corner
-        dx_to_corner = cx - ex
-        dy_to_corner = cy - ey
+        # Step 1a: Reverse 10cm from end point
+        # Calculate reverse direction (opposite of the heading toward end point)
+        if len(checkpoints) >= 2:
+            prev_x, prev_y = checkpoints[-2]
+            dx = ex - prev_x
+            dy = ey - prev_y
+            heading_len = math.hypot(dx, dy)
+            if heading_len > 0.1:
+                # Reverse 10cm in opposite direction of approach
+                reverse_distance = 10.0
+                reverse_x = ex - (dx / heading_len) * reverse_distance
+                reverse_y = ey - (dy / heading_len) * reverse_distance
+                # Clamp to arena bounds
+                reverse_x = max(5.0, min(ARENA_WIDTH_CM - 5.0, reverse_x))
+                reverse_y = max(5.0, min(ARENA_HEIGHT_CM - 5.0, reverse_y))
+                reverse_point = (reverse_x, reverse_y)
+                
+                # Check if reverse path is clear
+                reverse_path = _plan_segment_with_clearance(last_checkpoint, reverse_point, obstacles)
+                if reverse_path is not None:
+                    reverse_checkpoint_idx = len(checkpoints)  # Mark where reverse starts
+                    print(f"   Reversing 10cm from ({ex:.1f},{ey:.1f}) to ({reverse_x:.1f},{reverse_y:.1f})")
+                    # Add reverse waypoints
+                    for wp in reverse_path[1:]:
+                        if wp != checkpoints[-1]:
+                            checkpoints.append(wp)
+                else:
+                    print(f"⚠️  Cannot reverse 10cm with required clearance")
+        
+        # Step 1b: Ram into bottom-left corner (0, ARENA_HEIGHT_CM)
+        # From current position, drive toward bottom-left corner
+        current_pos = checkpoints[-1]
+        cx, cy = current_pos
+        
+        # Target: Bottom-left corner
+        target_corner = (0, ARENA_HEIGHT_CM)
+        
+        # Calculate direction to corner
+        dx_to_corner = target_corner[0] - cx
+        dy_to_corner = target_corner[1] - cy
         dist_to_corner = math.hypot(dx_to_corner, dy_to_corner)
         
-        if dist_to_corner > 0.1:  # Avoid division by zero
-            ram_distance = min(10.0, dist_to_corner)  # Don't overshoot
-            ram_x = ex + (dx_to_corner / dist_to_corner) * ram_distance
-            ram_y = ey + (dy_to_corner / dist_to_corner) * ram_distance
+        if dist_to_corner > 0.1:
+            # Ram point: go all the way to the corner (or as close as clearance allows)
+            # We'll aim for a point just before the corner to maintain clearance from walls
+            ram_distance = max(5.0, dist_to_corner - 2.0)  # Leave 2cm from corner
+            ram_x = cx + (dx_to_corner / dist_to_corner) * ram_distance
+            ram_y = cy + (dy_to_corner / dist_to_corner) * ram_distance
             ram_point = (ram_x, ram_y)
-            recalibration_checkpoint_idx = len(checkpoints)  # Mark where ram starts
-            checkpoints.append(ram_point)
             
-            # Step 2: Reverse back to a staging point
-            # Go back to a point ~10cm away from the corner in the opposite direction
-            reverse_distance = 10.0
-            reverse_x = ex - (dx_to_corner / dist_to_corner) * reverse_distance
-            reverse_y = ey - (dy_to_corner / dist_to_corner) * reverse_distance
-            # Clamp to arena bounds
-            reverse_x = max(5.0, min(ARENA_WIDTH_CM - 5.0, reverse_x))
-            reverse_y = max(5.0, min(ARENA_HEIGHT_CM - 5.0, reverse_y))
-            reverse_point = (reverse_x, reverse_y)
-            reverse_checkpoint_idx = len(checkpoints)  # Mark where reverse starts
-            checkpoints.append(reverse_point)
-        
-        # Step 3: Route through black fruits
-        # Build obstacles that exclude blacks (only greens and reds)
+            print(f"   Ramming into bottom-left corner: ({cx:.1f},{cy:.1f}) → ({ram_x:.1f},{ram_y:.1f})")
+            
+            # Check if ram path is clear
+            ram_path = _plan_segment_with_clearance(current_pos, ram_point, obstacles)
+            if ram_path is not None:
+                recalibration_checkpoint_idx = len(checkpoints)  # Mark where ram starts
+                # Add ram waypoints
+                for wp in ram_path[1:]:
+                    if wp != checkpoints[-1]:
+                        checkpoints.append(wp)
+                print(f"   ✅ Recalibration sequence added")
+            else:
+                print(f"⚠️  Cannot ram into bottom-left corner with required clearance, skipping")
+        else:
+            print(f"⚠️  Already at or very close to bottom-left corner")
+    
+    # Step 2: Black fruit collection (regardless of recalibration setting)
+    if final_dest_xy is not None:
+        # Build obstacles that exclude blacks (only greens and reds as obstacles)
         black_obstacles = []
+        # Red fruits are still obstacles when collecting blacks
+        for (rx, ry) in reds:
+            black_obstacles.append(_make_point_obstacle(rx, ry, MIN_CLEARANCE_CM))
         for gx, gy in greens:
             black_obstacles.append(_make_point_obstacle(gx, gy, MIN_CLEARANCE_CM))
         # Add no-go zones
@@ -677,10 +727,13 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None):
                 # Find nearest black fruit
                 nearest_black = min(remaining_blacks, key=lambda b: _dist(cur_pos, b))
                 
-                # Plan path to this black fruit
+                # Plan path to this black fruit with proper clearance
                 black_path = _plan_segment_with_clearance(cur_pos, nearest_black, black_obstacles)
                 if black_path is None:
-                    black_path = [cur_pos, nearest_black]
+                    # If A* fails, skip this black fruit (it's unreachable with clearance)
+                    print(f"⚠️  Cannot reach black fruit at ({nearest_black[0]:.1f},{nearest_black[1]:.1f}) with required clearance, skipping")
+                    remaining_blacks.remove(nearest_black)
+                    continue
                 
                 # Add waypoints (excluding first point which is cur_pos)
                 for wp in black_path[1:]:
@@ -690,14 +743,15 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None):
                 remaining_blacks.remove(nearest_black)
                 cur_pos = nearest_black
         
-        # Step 4: Go to final destination
+        # Step 3: Go to final destination
         final_path = _plan_segment_with_clearance(checkpoints[-1], final_dest_xy, black_obstacles)
         if final_path is None:
-            final_path = [checkpoints[-1], final_dest_xy]
-        
-        for wp in final_path[1:]:
-            if wp != checkpoints[-1]:
-                checkpoints.append(wp)
+            print(f"⚠️  Cannot reach final destination ({final_dest_xy[0]:.1f},{final_dest_xy[1]:.1f}) with required clearance")
+            print(f"     Final destination may be blocked or too close to obstacles. Path will end at last reachable point.")
+        else:
+            for wp in final_path[1:]:
+                if wp != checkpoints[-1]:
+                    checkpoints.append(wp)
 
     # Build path relative turns
     segs = []
@@ -720,6 +774,27 @@ def build_auto_path(script_dir, start_xy=None, end_xy=None, final_dest_xy=None):
         
         segs.append((rel_turn, seg_dist))
         heading_deg = abs_heading
+
+    # Validate clearance for all segments
+    print(f"\n📏 Validating path clearance ({len(checkpoints)-1} segments)...")
+    min_clearances = []
+    violations = []
+    for i in range(1, len(checkpoints)):
+        a = checkpoints[i-1]
+        b = checkpoints[i]
+        min_clear = _segment_min_clearance(a, b, obstacles)
+        min_clearances.append(min_clear)
+        if min_clear < MIN_CLEARANCE_CM:
+            violations.append((i-1, a, b, min_clear))
+    
+    if violations:
+        print(f"⚠️  WARNING: {len(violations)} segment(s) violate minimum clearance:")
+        for seg_idx, a, b, clear in violations[:5]:  # Show first 5
+            print(f"   Segment {seg_idx}: ({a[0]:.1f},{a[1]:.1f}) → ({b[0]:.1f},{b[1]:.1f}) only {clear:.2f}cm clear (need {MIN_CLEARANCE_CM}cm)")
+    else:
+        avg_clear = sum(min_clearances) / len(min_clearances) if min_clearances else 0
+        min_overall = min(min_clearances) if min_clearances else 0
+        print(f"✅ All segments respect clearance (min: {min_overall:.2f}cm, avg: {avg_clear:.2f}cm)")
 
     write_checkpoints(script_dir, checkpoints)
     write_path(script_dir, segs)
