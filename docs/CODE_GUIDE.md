@@ -1,3 +1,80 @@
+# IHFC Prepsuite — Code Guide (simple explanation)
+
+This guide explains the project structure, what each major script does, and how the pieces interact. It's written for humans who want a clear mental model — no deep robotics background required.
+
+Project purpose in one sentence
+--------------------------------
+Tools to plan, measure and run a small two-wheeled robot inside a known arena. You can draw paths on the arena image, calibrate wheel encoders (distance and rotation), run those paths on the robot, and visualise live telemetry.
+
+How the system is organised (big picture)
+-----------------------------------------
+- `measure_arena.py` — interactive map editor. Draw checkpoints over `arena.png` and export `path.csv` (turns + distances) and `checkpoints_cm.csv` (actual positions in cm).
+- `measure_ppc_encoder_only.py` — pulses-per-centimetre (PPC) calibrator: drives a known distance and asks you to measure it so it can compute pulses/cm.
+- `measure_ppd_encoder_only.py` — pulses-per-degree (PPD) calibrator: spins the robot and refines pulses/degree so rotation commands map to real-world angles.
+- `straight_line_calibrator.py` — interactive straight-line balancing tool that adjusts motor factors until the robot goes straight.
+- `advanced.py` — core control library: sends commands to the ESP32 robot (motors, servos), listens to telemetry (IMU, encoders, LIDAR), and exposes helper functions for other scripts.
+- `move_control.py`, `run_track.py` — higher level followers that execute the exported path using the calibrations.
+- `telemetry_ui.py` — live dashboard showing arena, planned path, and estimated robot pose using encoder-based odometry plus IMU telemetry.
+- `fruit_ui.py` — simple arena overlay to mark fruit positions and export color-tagged CSVs / JSON mapping.
+- `launcher_gui.py` — a small Tkinter UI to launch the above tools and view/update calibration values quickly.
+
+How data flows when you plan and run a path
+-------------------------------------------
+1. Use `measure_arena.py` to create checkpoints and export `path.csv` and `checkpoints_cm.csv`.
+2. Place the robot at the start point in the arena. Ensure the robot's `robot_calibration.json` has reasonable PPC and PPD values (use the calibrators if not).
+3. Use the `launcher_gui.py` to open `telemetry_ui.py` and `run_track.py`, or directly run `run_track.py` to execute the path.
+4. `run_track.py` issues the movement primitives (turns and forward moves) via the helpers in `advanced.py`. It prefers `move_by_ticks()` (hardware encoder control) for accuracy.
+5. `telemetry_ui.py` listens for encoder and IMU telemetry from the ESP32 and displays estimated pose; it uses PPR/PPC/PPD to convert encoder counts to cm/deg.
+
+Key concepts you should know (simple)
+------------------------------------
+- Pulses-per-centimeter (PPC): how many encoder counts equal 1 cm of wheel travel. Used to turn distances (cm) into encoder ticks.
+- Pulses-per-degree (PPD): how many encoder counts equal 1° of robot rotation when turning in place. Used to turn angles into encoder ticks.
+- Motor factors: small left/right scaling multipliers that compensate mechanical differences between motors/wheels so the robot drives straight.
+- `move_by_ticks`: a command sent to the robot's firmware telling it to run motors until specified encoder deltas are reached. This is preferred to open-loop PWM for accuracy.
+
+Quick start: calibrate & run (minimum steps)
+-------------------------------------------
+1. Ensure the ESP32 is powered and reachable by the PC (via AP or station mode).
+2. Run the PPD calibrator: `python measure_ppd_encoder_only.py` and follow the prompts to refine rotation.
+3. Run the PPC calibrator: `python measure_ppc_encoder_only.py` and measure a forward run.
+4. Use `launcher_gui.py` → Launch Telemetry UI and confirm the robot's reported encoder deltas look sensible when you nudge it manually.
+5. Create or load a path with `measure_arena.py` and run it with `run_track.py`.
+
+How to verify odometry quickly (sanity checks)
+---------------------------------------------
+- Place the robot in a known spot and command a 100 cm forward move. Measure the actual displacement and compare to what `telemetry_ui.py` reports.
+- Command a 90° turn, measure the heading change (visually or with a protractor), compare to telemetry/encoders.
+- If discrepancy persists, re-run PPD/PPC calibrators and/or adjust motor factors with the straight-line calibrator.
+
+Where to look for calibration values
+-----------------------------------
+- `robot_calibration.json` in the repository root stores `pulses_per_cm`, `pulses_per_degree`, and motor factors. Tools read and write this file via `calibration_config.py`.
+
+Developer notes (quick)
+-----------------------
+- Most movement code expects the same coordinate/heading convention: origin at top-left, +X=right, +Y=down, 0° = up.
+- `advanced.py` performs socket-based RPC-style commands (UDP) and spawns a telemetry listener thread that populates module-level variables other scripts read.
+- When adding features, prefer to reuse `move_by_ticks()` for movement to keep behaviour consistent between tuning and path execution.
+
+Where to change physical robot constants
+--------------------------------------
+- `esp32/src/config.h` — firmware constants like wheel diameter and wheelbase (mm). If you change these, reflash the ESP32 firmware.
+- `robot_calibration.json` — runtime calibration used by Python tools. Update via calibrators or by editing and saving.
+
+If something breaks (quick troubleshooting checklist)
+--------------------------------------------------
+1. No telemetry: check WiFi/AP connectivity and that the ESP32 is broadcasting alive messages. `advanced.py` will auto-update the IP if an `alive` packet is received.
+2. Robot drives in circles: run the straight-line calibrator and ensure motor factors are saved.
+3. Position displayed incorrectly: re-run PPC/PPD calibrators and verify `robot_calibration.json` values.
+
+Further reading
+---------------
+- See `docs/measure_ppc.md` and `docs/measure_ppd.md` for detailed calibrator instructions.
+- Read `docs/telemetry_ui.md` for odometry caveats and troubleshooting.
+
+Made changes (oct 2025)
+- Added a launcher GUI shortcut for the PPD/PPC calibrators and a README-style CODE_GUIDE to make onboarding easier.
 # IHFC Prep Suite Code Guide
 
 This document provides a walkthrough of the repository layout, the primary runtime flows, and how major modules interact across the desktop control tools, the Raspberry Pi service, and the ESP32 firmware. Use it as a reference when modifying behavior or onboarding new contributors.

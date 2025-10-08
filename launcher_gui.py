@@ -125,6 +125,22 @@ class LauncherApp:
             button_bar, text="Set Pulses/cm", command=self.update_pulses_per_cm, width=14
         ).pack(side=tk.LEFT)
 
+        # Tuner shortcuts: launch the interactive PPD/PPC wizards
+        tuner_bar = ttk.Frame(calib_frame)
+        tuner_bar.pack(anchor=tk.W, pady=(8, 0))
+        ttk.Button(
+            tuner_bar,
+            text="Tune PPD",
+            command=self.launch_ppd_tuner,
+            width=14,
+        ).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(
+            tuner_bar,
+            text="Tune PPC",
+            command=self.launch_ppc_tuner,
+            width=14,
+        ).pack(side=tk.LEFT)
+
         ttk.Button(calib_frame, text="Refresh", command=self.refresh_calibration).pack(
             anchor=tk.W, pady=(6, 0)
         )
@@ -293,6 +309,32 @@ class LauncherApp:
 
         try:
             subprocess.Popen(command, cwd=str(BASE_DIR), creationflags=creationflags)
+        except Exception as exc:
+            messagebox.showerror("Launch failed", str(exc))
+
+    def launch_ppd_tuner(self) -> None:
+        script_path = BASE_DIR / "measure_ppd_encoder_only.py"
+        if not script_path.exists():
+            messagebox.showerror("Missing file", f"{script_path.name} could not be found.")
+            return
+        try:
+            creationflags = 0
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+                creationflags = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
+            subprocess.Popen([sys.executable, str(script_path)], cwd=str(BASE_DIR), creationflags=creationflags)
+        except Exception as exc:
+            messagebox.showerror("Launch failed", str(exc))
+
+    def launch_ppc_tuner(self) -> None:
+        script_path = BASE_DIR / "measure_ppc_encoder_only.py"
+        if not script_path.exists():
+            messagebox.showerror("Missing file", f"{script_path.name} could not be found.")
+            return
+        try:
+            creationflags = 0
+            if os.name == "nt" and hasattr(subprocess, "CREATE_NEW_CONSOLE"):
+                creationflags = subprocess.CREATE_NEW_CONSOLE  # type: ignore[attr-defined]
+            subprocess.Popen([sys.executable, str(script_path)], cwd=str(BASE_DIR), creationflags=creationflags)
         except Exception as exc:
             messagebox.showerror("Launch failed", str(exc))
 
