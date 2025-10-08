@@ -27,6 +27,8 @@ from path_planner import (
     load_no_go_zones,
     load_path_config,
     save_no_go_zones,
+    load_final_destination,
+    save_final_destination,
 )
 
 # Precise arena dimensions in cm
@@ -208,11 +210,12 @@ def main():
     positions = compute_fruit_positions(SPACING_CM_DEFAULT, OFFSETS_FROM_RIGHT_CM)
     fruit_colors: dict[tuple[int, int], str] = {}
     start_point_cm, end_point_cm = load_path_config(script_dir)
+    final_dest_cm = load_final_destination(script_dir)
     nogo_points_raw, nogo_rects_raw, nogo_clearance = load_no_go_zones(script_dir)
     nogo_clearance = max(nogo_clearance, NO_GO_CLEARANCE_CM)
     nogo_points: list[tuple[float, float]] = list(nogo_points_raw)
     nogo_rects: list[tuple[float, float, float, float]] = list(nogo_rects_raw)
-    select_mode = None  # "start", "end", "nogo_point", "nogo_rect"
+    select_mode = None  # "start", "end", "final_dest", "nogo_point", "nogo_rect"
     pending_rect_corner: tuple[float, float] | None = None
     status_message = ""
 
@@ -226,11 +229,13 @@ def main():
         button_width = 150
         button_gap = 12
         bottom_margin = 14
-        second_row_y = wh - button_height - bottom_margin
+        third_row_y = wh - button_height - bottom_margin
+        second_row_y = max(0, third_row_y - button_height - 10)
         first_row_y = max(0, second_row_y - button_height - 10)
         set_start_rect = pg.Rect(14, first_row_y, button_width, button_height)
         set_end_rect = pg.Rect(set_start_rect.right + button_gap, first_row_y, button_width, button_height)
-        create_path_rect = pg.Rect(set_end_rect.right + button_gap, first_row_y, button_width, button_height)
+        set_final_dest_rect = pg.Rect(set_end_rect.right + button_gap, first_row_y, button_width, button_height)
+        create_path_rect = pg.Rect(set_final_dest_rect.right + button_gap, first_row_y, button_width, button_height)
         add_nogo_point_rect = pg.Rect(14, second_row_y, button_width, button_height)
         add_nogo_rect_rect = pg.Rect(add_nogo_point_rect.right + button_gap, second_row_y, button_width, button_height)
         clear_nogo_rect = pg.Rect(add_nogo_rect_rect.right + button_gap, second_row_y, button_width, button_height)
@@ -271,6 +276,11 @@ def main():
                     active_mode = None
                     pending_rect_corner = None
                     status_message = "Click inside the arena to set END point"
+                elif set_final_dest_rect.collidepoint(mx, my):
+                    select_mode = "final_dest"
+                    active_mode = None
+                    pending_rect_corner = None
+                    status_message = "Click inside the arena to set FINAL DESTINATION"
                 elif add_nogo_point_rect.collidepoint(mx, my):
                     select_mode = "nogo_point"
                     active_mode = None
@@ -294,7 +304,7 @@ def main():
                     pending_rect_corner = None
                     active_mode = None
                     try:
-                        checkpoints, segments = build_auto_path(script_dir, start_point_cm, end_point_cm)
+                        checkpoints, segments = build_auto_path(script_dir, start_point_cm, end_point_cm, final_dest_cm)
                         if segments:
                             status_message = f"Path saved: {len(segments)} segments"
                         else:
@@ -312,6 +322,11 @@ def main():
                         elif select_mode == "end":
                             end_point_cm = (round(sx_cm, 2), round(sy_cm, 2))
                             status_message = f"End set to ({end_point_cm[0]:.1f}, {end_point_cm[1]:.1f}) cm"
+                            select_mode = None
+                        elif select_mode == "final_dest":
+                            final_dest_cm = (round(sx_cm, 2), round(sy_cm, 2))
+                            save_final_destination(script_dir, final_dest_cm)
+                            status_message = f"Final destination set to ({final_dest_cm[0]:.1f}, {final_dest_cm[1]:.1f}) cm"
                             select_mode = None
                         elif select_mode == "nogo_point":
                             point = (round(sx_cm, 2), round(sy_cm, 2))
@@ -408,8 +423,8 @@ def main():
             sx, sy = image_to_screen(ix, iy, scale, offset)
             pg.draw.circle(screen, (255, 200, 120), (int(sx), int(sy)), 6, width=2)
 
-        # Draw start/end markers if available
-        for label, point, color in (("S", start_point_cm, (80, 180, 255)), ("E", end_point_cm, (255, 140, 60))):
+        # Draw start/end/final destination markers if available
+        for label, point, color in (("S", start_point_cm, (80, 180, 255)), ("E", end_point_cm, (255, 140, 60)), ("F", final_dest_cm, (100, 255, 100))):
             if point is None:
                 continue
             ix, iy = cm_to_image(point[0], point[1], px_per_cm_x, px_per_cm_y)
@@ -442,6 +457,7 @@ def main():
         # Draw buttons and status
         draw_button(screen, set_start_rect, "Set Start", font_big, active=(select_mode == "start"))
         draw_button(screen, set_end_rect, "Set End", font_big, active=(select_mode == "end"))
+        draw_button(screen, set_final_dest_rect, "Set Final Dest", font_big, active=(select_mode == "final_dest"))
         draw_button(screen, create_path_rect, "Create Path", font_big)
         draw_button(screen, add_nogo_point_rect, "No-Go Point", font_big, active=(select_mode == "nogo_point"))
         draw_button(screen, add_nogo_rect_rect, "No-Go Rect", font_big, active=(select_mode == "nogo_rect"))

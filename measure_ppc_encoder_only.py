@@ -28,6 +28,9 @@ from calibration_config import (
     save_pulses_per_cm,
 )
 
+# CRITICAL: This speed must match the speed used during path execution
+# (telemetry_ui.py, move_control.py) to ensure calibration accuracy.
+# Different speeds cause different motor behavior, momentum, and backlash.
 DEFAULT_SPEED = 45
 DEFAULT_DISTANCE_CM = 80.0
 TOLERANCE_TICKS = 80

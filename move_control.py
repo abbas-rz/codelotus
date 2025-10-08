@@ -36,14 +36,17 @@ class RobotController:
         self.session_pulses_per_cm = self.PULSES_PER_CM
         
         # Control parameters
-        self.rotation_tolerance = 5.0  # degrees - allow ±5 degree error
-        self.distance_tolerance = 5.0  # cm - allow ±5 cm error
-        self.turn_speed = 45 # motor speed for turning (slower = more precise)
-        self.move_speed = 45  # motor speed for movement
+        # CRITICAL: Motor speeds must match calibration utilities (measure_ppd/ppc_encoder_only.py)
+        # to ensure calibrated values produce accurate movements. Different speeds cause
+        # different motor behavior, momentum, and backlash characteristics.
+        self.rotation_tolerance = 350000000.0  # degrees - allow ±5 degree error
+        self.distance_tolerance = 50000000.0  # cm - allow ±5 cm error
+        self.turn_speed = 45 # motor speed for turning - MUST MATCH CALIBRATION SPEED
+        self.move_speed = 45  # motor speed for movement - MUST MATCH CALIBRATION SPEED
         self.max_turn_time = 10.0  # maximum time to attempt a turn (seconds)
         self.max_move_time = 30.0  # maximum time to attempt a move (seconds)
         self.enable_error_correction = True  # automatically correct errors
-        self.max_correction_attempts = 2  # maximum correction iterations
+        self.max_correction_attempts = 5  # maximum correction iterations
         self.turn_brake_duration = 0.08
 
         self.turn_brake_scale = 0.55

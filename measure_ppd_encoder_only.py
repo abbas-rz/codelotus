@@ -25,6 +25,9 @@ from advanced import (
 )
 from calibration_config import load_pulses_per_degree, save_pulses_per_degree
 
+# CRITICAL: This speed must match the speed used during path execution
+# (telemetry_ui.py, move_control.py) to ensure calibration accuracy.
+# Different speeds cause different motor behavior, momentum, and backlash.
 DEFAULT_SPEED = 45
 LOWER_BOUND = 5.0
 UPPER_BOUND = 200.0

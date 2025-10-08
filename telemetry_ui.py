@@ -245,11 +245,12 @@ def execute_path_segments(segments, status_callback=None):
         print(f"Calibrated pulses-per-degree: {current_ppd:.2f}")
         print(f"Calibrated pulses-per-cm: {current_ppc:.2f}")
         
-        # Use same motor settings as move_control.py
-        turn_speed = 35  # Same as move_control.py default
-        move_speed = 45  # Same as move_control.py defaults
+        # CRITICAL: Use same motor speeds as calibration utilities (measure_ppd/ppc use 45)
+        # Different speeds cause different motor behavior and over/undershoot
+        turn_speed = 45  # Must match measure_ppd_encoder_only.py DEFAULT_SPEED
+        move_speed = 45  # Must match measure_ppc_encoder_only.py DEFAULT_SPEED
         
-        print(f"Using move_control.py motor settings: turn_speed={turn_speed}, move_speed={move_speed}")
+        print(f"Using calibration-matched motor settings: turn_speed={turn_speed}, move_speed={move_speed}")
         controller.configure_speeds(turn_speed=turn_speed, move_speed=move_speed)
         
         # Ensure we're using the same motor control method as move_control.py
@@ -520,11 +521,11 @@ def main():
             a = pts_scr[i - 1]
             b = pts_scr[i]
             if i - 1 < seg_idx:
-                color = (100, 200, 100)  # done
+                color = (100, 200, 100)  # done (green)
             elif i - 1 == seg_idx:
-                color = (0, 220, 255)    # current
+                color = (255, 255, 0)    # current (bright yellow)
             else:
-                color = (120, 120, 120)  # pending
+                color = (120, 120, 120)  # pending (gray)
             pg.draw.line(screen, color, a, b, 3)
             pg.draw.circle(screen, color, (int(a[0]), int(a[1])), 4)
         if pts_scr:
