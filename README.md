@@ -5,8 +5,24 @@ A small, focused toolkit to plan, visualize, and execute paths for our ITU IHFC 
 - A Pygame-CE arena measurement tool to design paths and export commands.
 - A pure-pursuit-style follower that runs those paths on the robot.
 - A live telemetry UI to visualize sensors and progress over the arena map.
+- **A complete robot simulator** for testing without hardware (see `simulator/`).
 
 All tools assume an arena sized 118 cm (W) x 114 cm (H) and share the same coordinate and heading conventions.
+
+## New: Robot Simulator 🎮
+
+Test your code without hardware! The `simulator/` folder contains a complete virtual environment:
+- Physics-based 2-wheel differential drive robot
+- Mock ESP32 with UDP telemetry (encoders, IMU)
+- Visual Pygame UI showing robot movement in arena
+- Test scripts for calibration and path execution
+
+**Quick start simulator:**
+```powershell
+python .\simulator\simulator_ui.py
+```
+
+See `simulator/README.md` for full details.
 
 ## Contents
 
